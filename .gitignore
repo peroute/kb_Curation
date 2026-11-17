@@ -1,0 +1,19 @@
+.DS_Store
+
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node / Next.js
+node_modules/
+.next/
+*.tsbuildinfo
+
+# Generated documents and exports
+data/
