@@ -17,3 +17,5 @@ node_modules/
 
 # Generated documents and exports
 data/
+/.understand-anything
+/editor
