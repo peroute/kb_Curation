@@ -8,6 +8,8 @@ Sources ─► Crawl ─► Pages + change detection ─► Entries (categorised
         ─► Document (Word / Google Doc) + JSON feed for the chatbot
 ```
 
+> **Where this code runs.** This repo is the KB Curation part of [`prajwal2021/ChatBot`](https://github.com/prajwal2021/ChatBot) (folder `kb-curation/`, branch `chatbot_V1`). That branch also holds the chatbot and is what tosmonline0001 deploys. Work on KB Curation here; changes are copied into `ChatBot/kb-curation/` to go live. Only `.gitignore` and the first comment in `docker-compose.yml` are meant to differ between the two.
+
 ## Run
 
 Needs PostgreSQL (database `kb_curation`), Python 3.11 and Node 20+.
@@ -57,3 +59,15 @@ screen lists his topics and whether the website covers them, and has a slider fo
 found by later crawls are compared automatically. Nothing is rejected without a person pressing the button.
 
 Borderline entries (similarity between 0.45 and 0.72) are read by an AI model that decides whether they are the kind of fact the topics cover; staff profiles, meeting minutes, address footers and bare link lists are turned down. The slider only decides the rest.
+
+## ServiceNow section
+
+Each chatbot also has a **ServiceNow** section (sidebar group). It holds the Texas Tech Online and TTU K12 knowledge articles, imported once from ServiceNow and kept up to date from web pages linked to each category. When a linked page changes, the AI (`KB_SN_MODEL`, default `gpt-4.1`) proposes exact edits, new articles or removals for review. Code: `backend/app/servicenow.py`, `sn_ai.py`, `sn_html.py`, `sn_api.py` and `web/src/app/[bot]/servicenow/`. The one-time import endpoints only work when `SN_IMPORT_TOKEN` is set.
+
+## Tests
+
+```bash
+cd backend
+createdb kb_curation_sntest   # throwaway database, tables are dropped and recreated
+SN_TEST_DATABASE_URL=postgresql+psycopg://localhost:5432/kb_curation_sntest python -m pytest tests
+```
