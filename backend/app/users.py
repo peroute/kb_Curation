@@ -11,10 +11,10 @@ import hmac
 import secrets
 import sys
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .models import User
+from .models import LoginSession, User
 
 MIN_PASSWORD = 8
 # scrypt cost: ~50 ms per hash, slow enough to make guessing billions of passwords impractical
@@ -40,6 +40,11 @@ def verify_password(pw: str, stored: str) -> bool:
     return hmac.compare_digest(h, bytes.fromhex(hash_hex))  # same time whether close or not
 
 
+def token_hash(token: str) -> str:
+    """The session token as stored in the database (sha256 hex): the raw token only ever lives in the cookie."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 def find_user(db: Session, name: str) -> User | None:
     """Look up a user by name, ignoring case ('jane doe' finds 'Jane Doe')."""
     return db.scalar(select(User).where(func.lower(User.name) == name.strip().lower()))
@@ -47,7 +52,7 @@ def find_user(db: Session, name: str) -> User | None:
 
 def add_user(name: str) -> None:
     """Create the user, or reset the password of an existing one. Prompts for the password twice."""
-    from .db import SessionLocal, engine
+    from .db import Base, SessionLocal, engine
 
     name = name.strip()
     if not name or len(name) > 80:
@@ -58,11 +63,12 @@ def add_user(name: str) -> None:
     if getpass.getpass("Again:    ") != pw:
         sys.exit("Passwords don't match.")
 
-    User.__table__.create(engine, checkfirst=True)  # so this works before the API has ever started
+    Base.metadata.create_all(engine, tables=[User.__table__, LoginSession.__table__])  # works before the API first starts
     with SessionLocal() as db:
         user = find_user(db, name)
         if user:
             user.password_hash = hash_password(pw)
+            db.execute(delete(LoginSession).where(LoginSession.user_id == user.id))  # signed out everywhere
             msg = f"Password reset for {user.name}"
         else:
             db.add(User(name=name, password_hash=hash_password(pw)))

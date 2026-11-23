@@ -243,3 +243,11 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(80), unique=True)
     password_hash: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(TS, default=now)
+
+
+class LoginSession(Base):
+    """One signed-in browser. Only a hash of the cookie's token is stored, so a leaked table can't be used to sign in."""
+    __tablename__ = "login_sessions"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    expires_at: Mapped[datetime] = mapped_column(TS)
