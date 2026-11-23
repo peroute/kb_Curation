@@ -234,3 +234,12 @@ class ScopeChunk(Base):
     topic_id: Mapped[int] = mapped_column(ForeignKey("scope_topics.id", ondelete="CASCADE"), index=True)
     text: Mapped[str] = mapped_column(Text)
     emb: Mapped[list] = mapped_column(JSONB)
+
+
+class User(Base):
+    """A reviewer who signs in. Created with `python -m app.users add "Name"`; the name is what History shows."""
+    __tablename__ = "users"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(80), unique=True)
+    password_hash: Mapped[str] = mapped_column(String(200))
+    created_at: Mapped[datetime] = mapped_column(TS, default=now)
