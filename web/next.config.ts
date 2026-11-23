@@ -7,6 +7,8 @@ const basePath = process.env.NEXT_BASE_PATH || undefined;
 
 const nextConfig: NextConfig = {
   basePath,
+  // the browser needs the sub-path too, to send signed-out users to /login
+  env: { NEXT_PUBLIC_BASE_PATH: basePath ?? "" },
 };
 
 export default nextConfig;
