@@ -10,6 +10,8 @@ import { Button, inputCls, Label, Modal, useToast } from "./ui";
 type Bot = { key: string; name: string; description: string; waiting: number; sn_waiting?: number };
 
 const NAV: { group?: string; items: { href: string; label: string; icon: typeof Globe; badge?: "web" | "sn"; exact?: boolean }[] }[] = [
+  // Previous architecture, hidden for now:
+  /*
   { items: [{ href: "", label: "Overview", icon: LayoutDashboard }] },
   { group: "Collect", items: [
     { href: "/sources", label: "Sources", icon: Globe },
@@ -25,6 +27,7 @@ const NAV: { group?: string; items: { href: string; label: string; icon: typeof 
     { href: "/kb", label: "Knowledge base", icon: BookOpenCheck },
     { href: "/document", label: "Document", icon: FileText },
   ] },
+  */
   { group: "ServiceNow", items: [
     { href: "/servicenow", label: "Overview", icon: Library, exact: true },
     { href: "/servicenow/categories", label: "Categories & links", icon: FolderTree },
