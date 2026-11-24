@@ -31,7 +31,7 @@ export default function LoginPage() {
       <Card className="p-5">
         <form onSubmit={submit}>
           <Label>Name</Label>
-          <input autoFocus autoComplete="username" className={inputCls} value={name} onChange={(e) => setName(e.target.value)} />
+          <input autoFocus autoComplete="username" className={inputCls} placeholder="e.g. Jane Doe" value={name} onChange={(e) => setName(e.target.value)} />
           <div className="h-3" />
           <Label>Password</Label>
           <input type="password" autoComplete="current-password" className={inputCls} value={password} onChange={(e) => setPassword(e.target.value)} />

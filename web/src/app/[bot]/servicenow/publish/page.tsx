@@ -33,11 +33,12 @@ export default function SnPublishPage() {
       versions.reload();
     } catch (e) { toast((e as Error).message, true); } finally { setBusy(false); }
   };
+  const summary = d ? [[d.counts.added, "new"], [d.counts.modified, "changed"], [d.counts.removed, "removed"]].filter(([n]) => n).map(([n, w]) => `${n} ${w}`).join(", ") : "";
   const shown = d?.changes.filter((c) => kind === "all" || c.change === kind) ?? [];
 
   return (
     <Page>
-      <PageHeader title="Release ServiceNow knowledge" description="Published, pending-retirement and retired articles go out together as a new version. The latest release is what the chatbot receives. Nothing is written back to ServiceNow." />
+      <PageHeader title="Release a version" description="Saves the whole knowledge base as a numbered version, with every article labeled." />
       {draft.error && <ErrorNote>{draft.error}</ErrorNote>}
       {!d ? (!draft.error && <Loading />) : (
         <div className="grid grid-cols-[1fr_320px] items-start gap-6">
@@ -66,7 +67,7 @@ export default function SnPublishPage() {
                 <Link key={v.id} href={`/${bot}/servicenow/kb?version=${v.number}`} className="flex items-center gap-4 px-5 py-3.5 hover:bg-subtle">
                   <span className={cn("flex size-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold", i === 0 ? "bg-ink text-white" : "bg-neutral-100 text-neutral-600")}>v{v.number}</span>
                   <div className="min-w-0 flex-1">
-                    <p className="flex items-center gap-2 text-[13px] font-medium">{v.note || `Version ${v.number}`} {i === 0 && <Badge tone="green" dot>Live</Badge>}</p>
+                    <p className="flex items-center gap-2 text-[13px] font-medium">{v.note || `Version ${v.number}`} {i === 0 && <Badge tone="green" dot>Latest</Badge>}</p>
                     <p className="text-xs text-muted">{dateTime(v.created_at)} · {v.created_by} · {plural(v.stats.total ?? 0, "article")}</p>
                   </div>
                   <span className="flex gap-2 font-mono text-xs tabular-nums">
@@ -83,19 +84,17 @@ export default function SnPublishPage() {
             <p className="text-xs font-medium uppercase tracking-wider text-neutral-400">Next version</p>
             <p className="mt-1 text-3xl font-semibold tracking-tight">v{d.next_version}</p>
             <div className="mt-4 space-y-2 text-[13px]">
-              <Line color="bg-emerald-500" label="Articles added" n={d.counts.added} />
-              <Line color="bg-amber-500" label="Articles modified" n={d.counts.modified} />
-              <Line color="bg-red-500" label="Articles removed" n={d.counts.removed} />
+              <p className="text-neutral-700">{summary || "No changes"}</p>
               <div className="flex justify-between border-t border-line pt-2"><span className="text-muted">Total after release</span><b className="tabular-nums">{d.total.toLocaleString()}</b></div>
             </div>
             {d.waiting_review > 0 && (
               <div className="mt-4 flex gap-2 rounded-xl bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
                 <AlertTriangle className="mt-px size-3.5 shrink-0" />
-                <span>{plural(d.waiting_review, "article is", "articles are")} still in <Link href={`/${bot}/servicenow/review`} className="font-medium underline">To do</Link> and will not be included until published.</span>
+                <span>{plural(d.waiting_review, "article is", "articles are")} still in <Link href={`/${bot}/servicenow`} className="font-medium underline">To do</Link> and aren&apos;t included.</span>
               </div>
             )}
             <textarea className="mt-4 h-20 w-full resize-none rounded-[10px] border border-line p-2.5 text-[13px] outline-none placeholder:text-neutral-400 focus:border-neutral-400" placeholder="What is in this version? (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
-            <Button variant="primary" className="mt-3 w-full" busy={busy} disabled={d.changes.length === 0} onClick={publish}><Rocket className="size-4" /> Release version {d.next_version}</Button>
+            <Button variant="primary" className="mt-3 w-full" busy={busy} disabled={d.changes.length === 0} onClick={publish}>{d.changes.length === 0 ? (d.base_version ? `Nothing new since version ${d.base_version}` : "Nothing to release yet") : <><Rocket className="size-4" /> Release version {d.next_version}</>}</Button>
             <p className="mt-2.5 text-center text-xs text-muted">Creates a permanent, read-only version.</p>
           </Card>
         </div>
@@ -104,6 +103,3 @@ export default function SnPublishPage() {
   );
 }
 
-const Line = ({ color, label, n }: { color: string; label: string; n: number }) => (
-  <div className="flex items-center justify-between"><span className="flex items-center gap-2 text-neutral-700"><span className={cn("size-2 rounded-full", color)} />{label}</span><b className={cn("tabular-nums", !n && "font-normal text-neutral-300")}>{n}</b></div>
-);
