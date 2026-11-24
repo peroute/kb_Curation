@@ -33,7 +33,7 @@ const NAV: { group?: string; items: { href: string; label: string; icon: typeof 
     { href: "/servicenow/categories", label: "Categories & links", icon: FolderTree },
     { href: "/servicenow/changes", label: "Changes", icon: GitCompareArrows },
     { href: "/servicenow/review", label: "Review", icon: ListChecks, badge: "sn" },
-    { href: "/servicenow/publish", label: "Publish", icon: Rocket },
+    { href: "/servicenow/publish", label: "Release", icon: Rocket },
     { href: "/servicenow/kb", label: "Knowledge base", icon: BookOpenCheck },
   ] },
   { group: "Audit", items: [{ href: "/history", label: "History", icon: History }] },

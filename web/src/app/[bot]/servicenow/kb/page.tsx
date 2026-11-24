@@ -39,7 +39,7 @@ function Inner() {
   }, [v, cat, q]);
 
   if (versions.data && versions.data.length === 0)
-    return <Page><PageHeader title="ServiceNow knowledge base" /><Card><Empty icon={<BookOpenCheck className="size-5" />} title="Nothing published yet" action={<Link href={`/${bot}/servicenow/publish`}><Button variant="primary">Go to Publish</Button></Link>}>The published articles appear here once the first version is published.</Empty></Card></Page>;
+    return <Page><PageHeader title="ServiceNow knowledge base" /><Card><Empty icon={<BookOpenCheck className="size-5" />} title="Nothing released yet" action={<Link href={`/${bot}/servicenow/publish`}><Button variant="primary">Go to Release</Button></Link>}>The articles appear here once the first version is released.</Empty></Card></Page>;
   if (error) return <Page><PageHeader title="ServiceNow knowledge base" /><Card><Empty title="This version could not be loaded">{error}</Empty></Card></Page>;
   if (!v) return <Page><Loading /></Page>;
   const exp = (f: string) => `${API}/api/chatbots/${bot}/servicenow/export?format=${f}&version=${v.number}`;
@@ -48,7 +48,7 @@ function Inner() {
     <Page wide>
       <PageHeader
         title="ServiceNow knowledge base"
-        description="The published articles exactly as the chatbot receives them. Change them in Review and publish a new version."
+        description="The released articles exactly as the chatbot receives them. Change them in Review, then release a new version."
         actions={
           <>
             <a href={exp("json")} className="inline-flex h-9 items-center gap-1.5 rounded-[10px] border border-line bg-white px-3.5 text-sm font-medium hover:bg-subtle"><Download className="size-4" /> JSON for the chatbot</a>
@@ -78,7 +78,7 @@ function Inner() {
           <div className="min-w-0">
             <div className="relative mb-4">
               <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-neutral-400" />
-              <input className={cn(inputCls, "pl-9")} placeholder="Search the published articles" value={q} onChange={(e) => { setQ(e.target.value); setLimit(30); }} />
+              <input className={cn(inputCls, "pl-9")} placeholder="Search this release" value={q} onChange={(e) => { setQ(e.target.value); setLimit(30); }} />
             </div>
             <div className="space-y-3">
               {items.slice(0, limit).map((i) => (

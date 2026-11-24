@@ -27,7 +27,7 @@ export default function SnPublishPage() {
     setBusy(true);
     try {
       const v = await api<SnVersion>(`/api/chatbots/${bot}/servicenow/publish`, { body: { note } });
-      toast(`ServiceNow version ${v.number} is published`);
+      toast(`ServiceNow version ${v.number} is released`);
       setNote("");
       draft.reload();
       versions.reload();
@@ -37,15 +37,15 @@ export default function SnPublishPage() {
 
   return (
     <Page>
-      <PageHeader title="Publish ServiceNow knowledge" description="Approved articles collect here until you publish them as a new version. The published version is what the chatbot receives. Nothing is written back to ServiceNow." />
+      <PageHeader title="Release ServiceNow knowledge" description="Published, pending-retirement and retired articles go out together as a new version. The latest release is what the chatbot receives. Nothing is written back to ServiceNow." />
       {draft.error && <ErrorNote>{draft.error}</ErrorNote>}
       {!d ? (!draft.error && <Loading />) : (
         <div className="grid grid-cols-[1fr_320px] items-start gap-6">
           <div className="min-w-0">
             {d.changes.length === 0 ? (
               <Card>
-                <Empty icon={<CheckCircle2 className="size-5" />} title={d.base_version ? "Everything approved is published" : "Nothing approved yet"} action={d.waiting_review > 0 && <Link href={`/${bot}/servicenow/review`}><Button variant="primary">Review {plural(d.waiting_review, "article")}</Button></Link>}>
-                  {d.base_version ? `Version ${d.base_version} matches the approved articles.` : "Approve articles in Review, then come back to publish the first version."}
+                <Empty icon={<CheckCircle2 className="size-5" />} title={d.base_version ? `Everything published is in version ${d.base_version}` : "Nothing published yet"} action={d.waiting_review > 0 && <Link href={`/${bot}/servicenow/review`}><Button variant="primary">Review {plural(d.waiting_review, "article")}</Button></Link>}>
+                  {d.base_version ? "Publish or retire articles in Review, then come back to release a new version." : "Publish articles in Review, then come back to release the first version."}
                 </Empty>
               </Card>
             ) : (
@@ -61,7 +61,7 @@ export default function SnPublishPage() {
 
             <h2 className="mb-3 mt-10 font-semibold">Version history</h2>
             <Card className="divide-y divide-line">
-              {!versions.data?.length && <p className="px-5 py-8 text-center text-sm text-muted">No versions published yet.</p>}
+              {!versions.data?.length && <p className="px-5 py-8 text-center text-sm text-muted">No versions released yet.</p>}
               {versions.data?.map((v, i) => (
                 <Link key={v.id} href={`/${bot}/servicenow/kb?version=${v.number}`} className="flex items-center gap-4 px-5 py-3.5 hover:bg-subtle">
                   <span className={cn("flex size-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold", i === 0 ? "bg-ink text-white" : "bg-neutral-100 text-neutral-600")}>v{v.number}</span>
@@ -86,16 +86,16 @@ export default function SnPublishPage() {
               <Line color="bg-emerald-500" label="Articles added" n={d.counts.added} />
               <Line color="bg-amber-500" label="Articles modified" n={d.counts.modified} />
               <Line color="bg-red-500" label="Articles removed" n={d.counts.removed} />
-              <div className="flex justify-between border-t border-line pt-2"><span className="text-muted">Total after publishing</span><b className="tabular-nums">{d.total.toLocaleString()}</b></div>
+              <div className="flex justify-between border-t border-line pt-2"><span className="text-muted">Total after release</span><b className="tabular-nums">{d.total.toLocaleString()}</b></div>
             </div>
             {d.waiting_review > 0 && (
               <div className="mt-4 flex gap-2 rounded-xl bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
                 <AlertTriangle className="mt-px size-3.5 shrink-0" />
-                <span>{plural(d.waiting_review, "article is", "articles are")} still waiting in <Link href={`/${bot}/servicenow/review`} className="font-medium underline">Review</Link> and will not be included.</span>
+                <span>{plural(d.waiting_review, "article is", "articles are")} still in <Link href={`/${bot}/servicenow/review`} className="font-medium underline">To do</Link> and will not be included until published.</span>
               </div>
             )}
             <textarea className="mt-4 h-20 w-full resize-none rounded-[10px] border border-line p-2.5 text-[13px] outline-none placeholder:text-neutral-400 focus:border-neutral-400" placeholder="What is in this version? (optional)" value={note} onChange={(e) => setNote(e.target.value)} />
-            <Button variant="primary" className="mt-3 w-full" busy={busy} disabled={d.changes.length === 0} onClick={publish}><Rocket className="size-4" /> Publish version {d.next_version}</Button>
+            <Button variant="primary" className="mt-3 w-full" busy={busy} disabled={d.changes.length === 0} onClick={publish}><Rocket className="size-4" /> Release version {d.next_version}</Button>
             <p className="mt-2.5 text-center text-xs text-muted">Creates a permanent, read-only version.</p>
           </Card>
         </div>

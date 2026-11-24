@@ -2,7 +2,7 @@
 import { AlertTriangle, ArrowRight, FolderTree, GitCompareArrows, Library, ListChecks, Rocket } from "lucide-react";
 import Link from "next/link";
 import { useApi } from "@/lib/api";
-import type { SnOverview } from "@/lib/sn";
+import { KIND_LABEL, SN_STATE, type SnKind, type SnOverview, type SnState } from "@/lib/sn";
 import { useBot } from "@/components/shell";
 import { Badge, Button, Card, Empty, ErrorNote, Loading, Page, PageHeader } from "@/components/ui";
 import { ago, cn, dateTime, plural, shortUrl } from "@/lib/utils";
@@ -15,7 +15,7 @@ export default function SnOverviewPage() {
     <Page>
       <PageHeader
         title="ServiceNow knowledge"
-        description="Articles imported once from ServiceNow, kept up to date from the web pages you link to each category. The AI proposes edits when a linked page changes; nothing reaches the chatbot until someone approves and publishes it."
+        description="Articles imported from ServiceNow, kept up to date from the web pages you link to each category. The AI proposes edits when a linked page changes; nothing reaches the chatbot until someone publishes it and releases a new version."
       />
       {error && <ErrorNote>{error}</ErrorNote>}
       {!o ? (!error && <Loading />) : !o.imported ? (
@@ -23,12 +23,11 @@ export default function SnOverviewPage() {
       ) : (
         <>
           <div className="grid grid-cols-4 gap-3">
-            <Tile href={`/${bot}/servicenow/review`} icon={ListChecks} label="Waiting for review" value={o.waiting} hint={[
-              o.waiting_by_kind.import && `${o.waiting_by_kind.import} imported`, o.waiting_by_kind.update && `${o.waiting_by_kind.update} AI updates`,
-              o.waiting_by_kind.new && `${o.waiting_by_kind.new} new`, o.waiting_by_kind.remove && `${o.waiting_by_kind.remove} removals`].filter(Boolean).join(" · ") || "All reviewed"} />
-            <Tile href={`/${bot}/servicenow/kb`} icon={Library} label="Approved articles" value={o.live} hint={o.published ? `Version ${o.published.number} is live` : "Not published yet"} />
+            <Tile href={`/${bot}/servicenow/review`} icon={ListChecks} label="To do" value={o.waiting} hint={Object.entries(o.waiting_by_kind)
+              .map(([k, n]) => `${n} ${KIND_LABEL[k as SnKind]?.label.toLowerCase() ?? k}`).join(" · ") || "All caught up"} />
+            <Tile href={`/${bot}/servicenow/kb`} icon={Library} label="Published articles" value={o.live} hint={o.published ? `Version ${o.published.number} is live` : "Not released yet"} />
             <Tile href={`/${bot}/servicenow/categories`} icon={FolderTree} label="Linked pages" value={o.links.total} hint={o.links.error ? `${o.links.error} could not be read` : `${o.categories} categories`} warn={!!o.links.error} />
-            <Tile href={`/${bot}/servicenow/publish`} icon={Rocket} label="Ready to publish" value={o.unpublished_total} hint={o.unpublished_total ? `+${o.unpublished.added} ~${o.unpublished.modified} −${o.unpublished.removed}` : "Nothing new"} />
+            <Tile href={`/${bot}/servicenow/publish`} icon={Rocket} label="Ready to release" value={o.unpublished_total} hint={o.unpublished_total ? `+${o.unpublished.added} ~${o.unpublished.modified} −${o.unpublished.removed}` : "Nothing new"} />
           </div>
 
           <div className="mt-6 grid grid-cols-[1fr_300px] items-start gap-6">
@@ -61,8 +60,8 @@ export default function SnOverviewPage() {
               <p className="mt-1">{plural(o.import?.articles ?? 0, "article")} from ServiceNow</p>
               <p className="text-xs text-muted">{dateTime(o.import?.at)} · {o.import?.by}</p>
               <div className="mt-4 space-y-1.5">
-                {(["new", "changed", "removal", "approved", "rejected", "removed"] as const).map((s) => (
-                  <div key={s} className="flex justify-between"><span className="capitalize text-muted">{s === "removal" ? "Removal proposed" : s}</span><b className={cn("tabular-nums", !o.articles[s] && "font-normal text-neutral-300")}>{o.articles[s]}</b></div>
+                {(Object.keys(SN_STATE) as SnState[]).map((s) => (
+                  <div key={s} className="flex justify-between"><span className="text-muted">{SN_STATE[s].label}</span><b className={cn("tabular-nums", !o.articles[s] && "font-normal text-neutral-300")}>{o.articles[s]}</b></div>
                 ))}
               </div>
               {!o.ai && (

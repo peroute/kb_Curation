@@ -9,7 +9,8 @@ import queue
 import threading
 import time
 import traceback
-from datetime import date, datetime, timedelta
+from collections.abc import Callable
+from datetime import timedelta
 
 import httpx
 from sqlalchemy import func, select
@@ -24,12 +25,10 @@ from .extract import extract, norm
 from .models import Activity, Chatbot, SnArticle, SnArticleEvent, SnCategory, SnLink, SnLinkEvent, SnVersion, now
 from .sn_html import article_content
 
-QUEUE = ("new", "changed", "removal")
-LIVE = ("approved", "changed", "removal")
-STATE_LABEL = {"draft": "Draft in ServiceNow", "review": "In review in ServiceNow",
-               "pending_retirement": "Pending retirement in ServiceNow"}
-EXPIRED = "Expired in ServiceNow"
-SYSTEM_LABELS = {EXPIRED, "AI update", "New from link", "AI suggests removing", *STATE_LABEL.values()}
+STATES = ("draft", "review", "published", "pending_retirement", "retired")
+RELEASED = ("published", "pending_retirement", "retired")         # what goes into a release
+STATE_LABEL = {"published": "Published", "pending_retirement": "Pending retirement", "retired": "Retired"}
+INTERNAL = "Internal only"
 
 
 class SnError(Exception):
@@ -45,17 +44,18 @@ def record(db: Session, bot_id: int, action: str, actor: str, summary: str, **de
 
 
 def has_proposal(a: SnArticle) -> bool:
-    return a.status in ("new", "changed") or (a.status == "rejected" and a.content is None)
+    """True when p_* holds text: a draft or review article's text, or a pending change on a published one."""
+    return a.p_content is not None
 
 
 def clear_proposal(a: SnArticle) -> None:
-    a.p_title = a.p_content = a.p_category_id = a.p_kind = a.p_reason = a.p_link_id = a.p_event_id = None
+    a.p_title = a.p_content = a.p_category_id = a.p_kind = a.p_reason = a.p_link_id = a.p_event_id = a.p_stage = None
     a.p_labels, a.p_edited = [], False
 
 
 def current_text(a: SnArticle) -> tuple[str, str]:
-    """What the article says right now for the AI: a waiting proposal wins over the approved text."""
-    if has_proposal(a) and a.p_content is not None:
+    """What the article says right now for the AI: a pending text wins over the published text."""
+    if has_proposal(a):
         return a.p_title or "", a.p_content
     return a.title or "", a.content or ""
 
@@ -66,22 +66,60 @@ def kb_url(number: str | None) -> str | None:
 
 # ── import ────────────────────────────────────────────────────────────────────
 
-def _expired(valid_to: str | None) -> bool:
-    if not valid_to:
-        return False
-    for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
-        try:
-            return datetime.strptime(valid_to[:10], fmt).date() < date.today()
-        except ValueError:
-            continue
-    return False
+def sn_state(raw: str | None) -> str:
+    """ServiceNow's state as ours. Anything else (scheduled_publish, outdated…) is a draft, so it never ships by accident."""
+    return raw if raw in STATES else "draft"
+
+
+def _newness(r: dict) -> tuple:
+    try:
+        version = tuple(int(x) for x in str(r.get("version") or "").split("."))   # "22.01" → (22, 1)
+    except ValueError:
+        version = ()
+    return version, r.get("updated") or ""
+
+
+def pick_versions(records: list[dict]) -> tuple[dict, dict | None]:
+    """(main, pending) for all ServiceNow records of one KB number. main = the newest published or pending-retirement
+    record, else the newest record. pending = the newest draft or review record newer than main, only when main is published."""
+    recs = sorted(records, key=_newness)
+    main = ([r for r in recs if sn_state(r.get("state")) in ("published", "pending_retirement")] or recs)[-1]
+    if sn_state(main.get("state")) != "published":
+        return main, None
+    newer = [r for r in recs if sn_state(r.get("state")) in ("draft", "review") and _newness(r) > _newness(main)]
+    return main, newer[-1] if newer else None
+
+
+def import_flags(art: dict) -> list[str]:
+    """Flags from a ServiceNow record: "Internal only" when its can_read list has no "Public view".
+    Older files have no can_read: then guess from the wording, as before."""
+    if "can_read" in art:
+        internal = "Public view" not in (art["can_read"] or [])
+    else:
+        raw = " ".join(p[1] for p in art.get("parts") or [] if p[1]) + (art.get("text") or "")
+        internal = "INTERNAL" in (art.get("title") or "") or "INTERNAL USE ONLY" in raw.upper()
+    return [INTERNAL] if internal else []
+
+
+def normalize_flags(flags: list[str], known: list[str]) -> list[str]:
+    """Trimmed, at most 40 characters, at most 8, matched ignoring case (a known name's casing wins)."""
+    casing = {k.lower(): k for k in known}
+    out: dict[str, str] = {}
+    for f in flags:
+        f = norm(f or "")[:40].strip()
+        if f:
+            out.setdefault(f.lower(), casing.get(f.lower(), f))
+    return list(out.values())[:8]
 
 
 def import_kb(db: Session, bot: Chatbot, kb: dict, actor: str) -> dict:
     """kb = {categories: [{sys_id, label, parent, active}], articles: [{sys_id, number, title, state, category, template,
-    valid_to, updated, parts, text}]}. Safe to run again: existing categories are updated, articles that nobody has
-    reviewed yet are refreshed, everything else is left alone."""
-    stats = {"categories": 0, "articles_new": 0, "articles_refreshed": 0, "articles_kept": 0}
+    valid_to, updated, version, latest, can_read, parts, text}]}. ServiceNow keeps each version as its own record: they are
+    grouped by KB number (by sys_id when there is none) into one article. Safe to run again (every 2 weeks):
+    changed only in ServiceNow → ServiceNow wins; changed only in the app → the app wins; changed in both → ServiceNow's
+    version waits in review. Articles missing from the file are left alone."""
+    stats = {"categories": 0, "articles_new": 0, "articles_refreshed": 0, "articles_kept": 0, "articles_conflict": 0,
+             "articles_merged": 0}
     cats = {c.sys_id: c for c in db.scalars(select(SnCategory).where(SnCategory.chatbot_id == bot.id))}
     for c in kb.get("categories") or []:
         row = cats.get(c["sys_id"])
@@ -111,114 +149,251 @@ def import_kb(db: Session, bot: Chatbot, kb: dict, actor: str) -> dict:
     for i, r in enumerate(sorted(cats.values(), key=lambda r: r.path.lower())):
         r.position = i
 
-    existing = {a.sys_id: a for a in db.scalars(select(SnArticle).where(SnArticle.chatbot_id == bot.id, SnArticle.sys_id.is_not(None)))}
+    def said(r: dict) -> tuple[str, str, int | None]:
+        cat = cats.get(r.get("category") or "")
+        return (norm(r.get("title") or "") or r.get("number") or "Untitled article",
+                article_content(r, SN_INSTANCE + "/") or "(This article has no text in ServiceNow.)", cat.id if cat else None)
+
+    groups: dict[str, list[dict]] = {}
     for art in kb.get("articles") or []:
-        content = article_content(art, SN_INSTANCE + "/")
-        title = norm(art.get("title") or "") or art.get("number") or "Untitled article"
-        cat = cats.get(art.get("category") or "")
-        raw = " ".join(p[1] for p in art.get("parts") or [] if p[1]) + (art.get("text") or "")
-        internal = "INTERNAL" in (art.get("title") or "") or "INTERNAL USE ONLY" in raw.upper()
-        labels = [x for x in [STATE_LABEL.get(art.get("state") or ""), EXPIRED if _expired(art.get("valid_to")) else None,
-                              "Internal only" if internal else None] if x]
-        a = existing.get(art["sys_id"])
-        if a is not None and (a.reviewer or a.status != "new" or a.p_kind != "import" or a.p_edited):
-            stats["articles_kept"] += 1                       # a person or the AI already worked on it: leave it alone
+        groups.setdefault(art.get("number") or f"sys_id:{art['sys_id']}", []).append(art)
+    rows = list(db.scalars(select(SnArticle).where(SnArticle.chatbot_id == bot.id, SnArticle.sys_id.is_not(None) | SnArticle.number.is_not(None))
+                           .order_by(SnArticle.id)))
+    done: set[int] = set()                                    # rows already matched to a group (or merged away)
+    for recs in groups.values():
+        main, pending = pick_versions(recs)
+        sys_ids = {r["sys_id"] for r in recs}
+        found = [r for r in rows if r.id not in done and ((main.get("number") and r.number == main["number"]) or r.sys_id in sys_ids)]
+        done.update(r.id for r in found)
+        a = next((r for r in found if r.sys_id == main["sys_id"]), found[0] if found else None)
+        if len(found) > 1:
+            stats["articles_merged"] += _merge(db, a, [r for r in found if r is not a], actor)
+        status = sn_state(main.get("state"))
+        title, text, cat_id = said(main)
+        updated = max(r.get("updated") or "" for r in (main, pending) if r) or None
+        if a is not None and a.sn_updated == updated:         # ServiceNow has not changed it since the last import
+            stats["articles_kept"] += int(a.app_changed)
+            continue
+        if a is not None and a.app_changed:                   # changed in both places: a person decides
+            stats["articles_conflict"] += 1
+            if status == "retired" and a.status == "published":
+                a.status, a.p_kind, a.p_reason = "pending_retirement", "remove", "Retired in ServiceNow"
+            elif a.status == "published" and not has_proposal(a) and (title, text) != (a.title, a.content):
+                a.p_title, a.p_content, a.p_category_id = title, text, cat_id
+                a.p_stage, a.p_kind, a.p_reason = "review", "servicenow", "Changed in ServiceNow"
+            log(db, a, "servicenow_changed", actor, state=status, title=title, content=text)
+            a.sn_updated = updated
             continue
         if a is None:
-            a = SnArticle(chatbot_id=bot.id, sys_id=art["sys_id"], status="new")
+            a = SnArticle(chatbot_id=bot.id)
             db.add(a)
             stats["articles_new"] += 1
         else:
             stats["articles_refreshed"] += 1
-        a.number, a.sn_state, a.sn_template = art.get("number"), art.get("state"), art.get("template")
-        a.valid_to, a.sn_updated = art.get("valid_to"), art.get("updated")
-        a.source_html = "\n".join(p[1] for p in art.get("parts") or [] if p[1]) or art.get("text") or ""
-        a.sn_content = content
-        a.category_id = cat.id if cat else None
-        a.p_title, a.p_content, a.p_category_id, a.p_labels, a.p_kind = title, content or "(This article has no text in ServiceNow.)", a.category_id, labels, "import"
-        a.p_reason = None
+        clear_proposal(a)
+        a.status, a.sys_id, a.number, a.labels = status, main["sys_id"], main.get("number"), import_flags(main)
+        a.sn_state, a.sn_template, a.valid_to, a.sn_updated = main.get("state"), main.get("template"), main.get("valid_to"), updated
+        a.source_html = "\n".join(p[1] for p in main.get("parts") or [] if p[1]) or main.get("text") or ""
+        a.sn_content, a.category_id = text, cat_id
+        if status in RELEASED:
+            a.title, a.content = title, text
+        else:                                                 # a draft or review article has no published text yet
+            a.title = a.content = None
+            a.p_title, a.p_content, a.p_category_id, a.p_kind = title, text, cat_id, "import"
+        if pending:
+            a.p_title, a.p_content, a.p_category_id = said(pending)
+            a.p_stage, a.p_kind = sn_state(pending.get("state")), "import"
         db.flush()
         log(db, a, "imported", actor, number=a.number, state=a.sn_state)
     record(db, bot.id, "import", actor, f"Imported from ServiceNow: {stats['articles_new']} new articles, "
-           f"{stats['articles_refreshed']} refreshed, {stats['categories']} categories", **stats)
+           f"{stats['articles_refreshed']} updated from ServiceNow, {stats['articles_conflict']} changed in both places, "
+           f"{stats['articles_merged']} duplicates merged, {stats['categories']} categories", **stats)
     db.commit()
     return stats
 
 
+def _merge(db: Session, keep: SnArticle, others: list[SnArticle], actor: str) -> int:
+    """Fold duplicate rows of one KB number into keep. Their web page links and history move over; the newest
+    person-edited text wins, and every other person-edited text stays in keep's history. Returns how many were merged."""
+    ids = [o.id for o in others]
+    for l in db.scalars(select(SnLink).where(SnLink.article_id.in_(ids))):
+        l.article_id = keep.id
+    for e in db.scalars(select(SnArticleEvent).where(SnArticleEvent.article_id.in_(ids))):
+        e.article_id = keep.id
+    if any(o.app_changed for o in others):
+        edited = sorted((r for r in [keep, *others] if r.app_changed), key=lambda r: r.updated_at)
+        for r in edited[:-1]:
+            log(db, keep, "merged_copy", actor, title=r.title, content=r.content)
+        keep.title, keep.content, keep.category_id = edited[-1].title, edited[-1].content, edited[-1].category_id
+        keep.app_changed = True
+    db.flush()                                                # move links and events before the rows (and their cascades) go
+    for o in others:
+        db.delete(o)
+    return len(others)
+
+
 # ── review ────────────────────────────────────────────────────────────────────
 
-def edit(db: Session, a: SnArticle, actor: str, *, title=None, content=None, category_id=None, labels=None) -> None:
-    if a.status in ("removal", "removed"):
-        raise SnError("This article is being removed and cannot be edited. Reject the removal first to keep it.")
-    if category_id and not db.scalar(select(SnCategory.id).where(SnCategory.id == category_id, SnCategory.chatbot_id == a.chatbot_id)):
+def in_todo(a: SnArticle) -> bool:
+    """Waiting for a person: in review (a new article or a pending change), or pending retirement."""
+    return a.status in ("review", "pending_retirement") or a.p_stage == "review"
+
+
+def todo_clause():
+    """in_todo as a query condition."""
+    return SnArticle.status.in_(("review", "pending_retirement")) | (SnArticle.p_stage == "review")
+
+
+def flag_list(db: Session, bot: Chatbot) -> list[str]:
+    """The flags checklist: "Internal only", then every flag this knowledge base's articles use, merged ignoring case."""
+    names = {INTERNAL.lower(): INTERNAL}
+    for labels in db.scalars(select(SnArticle.labels).where(SnArticle.chatbot_id == bot.id).order_by(SnArticle.id)):
+        for f in labels or []:
+            names.setdefault(f.lower(), f)
+    return [INTERNAL] + sorted((v for k, v in names.items() if k != INTERNAL.lower()), key=str.lower)
+
+
+def _check(db: Session, bot_id: int, title: str | None, content: str | None, category_id: int | None) -> None:
+    if category_id and not db.scalar(select(SnCategory.id).where(SnCategory.id == category_id, SnCategory.chatbot_id == bot_id)):
         raise SnError("That category does not exist.")
     if title is not None and not norm(title):
         raise SnError("The title cannot be empty.")
     if content is not None and not norm(content):
         raise SnError("The content cannot be empty.")
-    prop = has_proposal(a)
-    pre = "p_" if prop else ""
-    before = {"title": getattr(a, pre + "title"), "content": getattr(a, pre + "content")}
-    changed = (title is not None and title.strip() != before["title"]) or (content is not None and content.strip() != before["content"])
+
+
+def _tidy(content: str) -> str:
+    return "\n".join(x.rstrip() for x in content.strip().splitlines())
+
+
+def create_article(db: Session, bot: Chatbot, actor: str, *, title: str, content: str, category_id: int | None,
+                   flags: list[str], review: bool) -> SnArticle:
+    """A new article written in the app, saved as a draft or sent straight to review."""
+    _check(db, bot.id, title, content, category_id)
+    a = SnArticle(chatbot_id=bot.id, status="review" if review else "draft", category_id=category_id or None,
+                  p_title=title.strip(), p_content=_tidy(content), p_category_id=category_id or None, p_kind="written",
+                  labels=normalize_flags(flags, flag_list(db, bot)), app_changed=True)
+    db.add(a)
+    db.flush()
+    log(db, a, "created", actor, review=review)
+    return a
+
+
+def edit(db: Session, a: SnArticle, actor: str, *, title=None, content=None, category_id=None) -> None:
+    """Change the text. A draft or review article is edited in place; a published one gets (or keeps) a pending change."""
+    if a.status in ("pending_retirement", "retired"):
+        raise SnError("Keep it published or restore it before editing.")
+    _check(db, a.chatbot_id, title, content, category_id)
+    if a.status == "published" and not has_proposal(a):
+        a.p_title, a.p_content, a.p_category_id = a.title, a.content, a.category_id
+        a.p_stage, a.p_kind = "draft", "edit"
+    before = {"title": a.p_title, "content": a.p_content}
+    changed = (title is not None and title.strip() != before["title"]) or (content is not None and _tidy(content) != before["content"])
     if title is not None:
-        setattr(a, pre + "title", title.strip())
+        a.p_title = title.strip()
     if content is not None:
-        setattr(a, pre + "content", "\n".join(x.rstrip() for x in content.strip().splitlines()))
+        a.p_content = _tidy(content)
     if category_id is not None:
-        setattr(a, pre + "category_id", category_id or None)
-    if labels is not None:
-        setattr(a, pre + "labels", [x for x in dict.fromkeys(norm(l)[:40] for l in labels) if x][:8])
-    if prop:
-        a.p_edited = a.p_edited or changed
-    else:
-        a.revision += 1
-        a.reviewer, a.reviewed_at = actor, now()
+        a.p_category_id = category_id or None
+    a.p_edited = a.p_edited or changed
+    a.app_changed = True
     log(db, a, "edited", actor, text_changed=changed, **(before if changed else {}))
 
 
-def approve(db: Session, a: SnArticle, actor: str) -> None:
-    if a.status == "removal":
-        a.status, a.reviewer, a.reviewed_at = "removed", actor, now()
-        clear_proposal(a)
-        log(db, a, "removal_approved", actor)
-        return
-    if not has_proposal(a) or a.p_content is None:
-        raise SnError("There is nothing waiting for approval on this article.")
-    kind = "change_approved" if a.content is not None else "approved"
+def set_flags(db: Session, a: SnArticle, actor: str, flags: list[str]) -> None:
+    """Flags apply at once, whatever the state, and go out with the next release."""
+    before = list(a.labels or [])
+    a.labels = normalize_flags(flags, flag_list(db, db.get(Chatbot, a.chatbot_id)))
+    a.app_changed = True
+    log(db, a, "flags_changed", actor, before=before, after=a.labels)
+
+
+def _acted(db: Session, a: SnArticle, actor: str, action: str, **detail) -> None:
+    a.app_changed, a.reviewer, a.reviewed_at = True, actor, now()
+    log(db, a, action, actor, **detail)
+
+
+def send_for_review(db: Session, a: SnArticle, actor: str, note: str = "") -> None:
+    if a.status == "draft":
+        a.status = "review"
+    elif a.status == "published" and a.p_stage == "draft":
+        a.p_stage = "review"
+    else:
+        raise SnError("Only a draft can be sent for review.")
+    _acted(db, a, actor, "sent_for_review", note=note)
+
+
+def publish_article(db: Session, a: SnArticle, actor: str, note: str = "") -> None:
+    """The text in review becomes the published text; the text it replaces stays in the event."""
+    if not (a.status == "review" or (a.status == "published" and a.p_stage == "review")) or not has_proposal(a):
+        raise SnError("Only an article in review can be published.")
+    old = {"old_title": a.title, "old_content": a.content} if a.content is not None else {}
     a.title, a.content = a.p_title, a.p_content
     a.category_id = a.p_category_id if a.p_category_id is not None else a.category_id
-    a.labels = [x for x in a.p_labels or [] if x not in ("AI update", "New from link", "AI suggests removing")]
-    a.revision += 1
-    a.status, a.reviewer, a.reviewed_at = "approved", actor, now()
+    a.status, a.revision = "published", a.revision + 1
     clear_proposal(a)
-    log(db, a, kind, actor, revision=a.revision)
+    _acted(db, a, actor, "published", note=note, revision=a.revision, **old)
 
 
-def reject(db: Session, a: SnArticle, actor: str, note: str = "") -> None:
-    if a.status == "new":
-        a.status = "rejected"
-        log(db, a, "rejected", actor, note=note)
-    elif a.status == "changed":
-        clear_proposal(a)
-        a.status = "approved"
-        log(db, a, "change_rejected", actor, note=note)
-    elif a.status == "removal":
-        clear_proposal(a)
-        a.status = "approved"
-        log(db, a, "removal_rejected", actor, note=note)
+def send_back(db: Session, a: SnArticle, actor: str, note: str = "") -> None:
+    if a.status == "review":
+        a.status = "draft"
+    elif a.status == "published" and a.p_stage == "review":
+        a.p_stage = "draft"
     else:
-        raise SnError("There is nothing waiting for review on this article.")
-    a.reviewer, a.reviewed_at = actor, now()
+        raise SnError("Only an article in review can be sent back to draft.")
+    _acted(db, a, actor, "sent_back", note=note)
 
 
-def reopen(db: Session, a: SnArticle, actor: str) -> None:
-    if a.status == "rejected" and a.p_content:
-        a.status = "new"
-    elif a.status == "removed" and a.content:
-        a.status = "approved"
+def discard(db: Session, a: SnArticle, actor: str, note: str = "") -> None:
+    """Drop a pending change, or delete a new article made in the app that was never published."""
+    if a.status == "published" and has_proposal(a):
+        clear_proposal(a)
+        _acted(db, a, actor, "discarded", note=note)
+    elif a.status in ("draft", "review") and a.sys_id:
+        raise SnError("This draft comes from ServiceNow and would come back with the next import.")
+    elif a.status in ("draft", "review") and a.content is None:
+        db.delete(a)                                          # its events go with it; History keeps the Activity line
+    elif a.status in ("draft", "review"):
+        raise SnError("This article was published before, so it stays as a draft.")
     else:
-        raise SnError("This article cannot be reopened.")
-    log(db, a, "reopened", actor)
+        raise SnError("There is no draft to discard on this article.")
+
+
+def suggest_retire(db: Session, a: SnArticle, actor: str, note: str = "") -> None:
+    if a.status != "published" or has_proposal(a):
+        raise SnError("Only a published article with no pending change can be suggested for retiring.")
+    a.status, a.p_kind, a.p_reason = "pending_retirement", "remove", note.strip() or None
+    _acted(db, a, actor, "suggested_retire", note=note)
+
+
+def keep_published(db: Session, a: SnArticle, actor: str, note: str = "") -> None:
+    if a.status != "pending_retirement":
+        raise SnError("This article is not waiting to be retired.")
+    a.status, a.p_reason, a.p_kind = "published", None, None
+    _acted(db, a, actor, "kept_published", note=note)
+
+
+def retire(db: Session, a: SnArticle, actor: str, note: str = "") -> None:
+    if a.status != "pending_retirement":
+        raise SnError("Only an article pending retirement can be retired.")
+    a.status = "retired"
+    _acted(db, a, actor, "retired", note=note)
+
+
+def restore(db: Session, a: SnArticle, actor: str, note: str = "") -> None:
+    """Retired → draft. Its published text is copied into the draft so there is something to edit."""
+    if a.status != "retired":
+        raise SnError("Only a retired article can be restored.")
+    if a.content is not None:
+        a.p_title, a.p_content, a.p_category_id = a.title, a.content, a.category_id
+    a.status, a.p_stage, a.p_kind, a.p_reason = "draft", None, None, None
+    _acted(db, a, actor, "restored", note=note)
+
+
+ACTIONS: dict[str, Callable] = {"send_for_review": send_for_review, "publish": publish_article, "send_back": send_back,
+                                "discard": discard, "suggest_retire": suggest_retire, "keep": keep_published,
+                                "retire": retire, "restore": restore}
 
 
 # ── links: fetch, compare, ask the AI, turn its answer into proposals ─────────
@@ -240,7 +415,9 @@ def descendants(db: Session, cat_id: int) -> list[int]:
 
 
 def _articles_for(db: Session, link: SnLink) -> list[SnArticle]:
-    q = select(SnArticle).where(SnArticle.chatbot_id == link.chatbot_id, SnArticle.status.not_in(("rejected", "removed")))
+    """What the AI reads: published articles (with or without a pending change) and new articles in review."""
+    q = select(SnArticle).where(SnArticle.chatbot_id == link.chatbot_id,
+                                (SnArticle.status == "published") | ((SnArticle.status == "review") & SnArticle.content.is_(None)))
     if link.article_id:
         q = q.where(SnArticle.id == link.article_id)
     else:
@@ -272,41 +449,35 @@ def apply_decisions(db: Session, link: SnLink, ev: SnLinkEvent, decisions: list[
         res = dict(d)
         res.pop("content", None)
         if d["action"] == "new":
-            a = SnArticle(chatbot_id=link.chatbot_id, category_id=link.category_id, status="new", p_title=d["title"], p_content=d["content"],
-                          p_category_id=link.category_id, p_labels=["New from link"], p_kind="new", p_reason=d.get("reason"),
-                          p_link_id=link.id, p_event_id=ev.id)
+            a = SnArticle(chatbot_id=link.chatbot_id, category_id=link.category_id, status="review", p_title=d["title"], p_content=d["content"],
+                          p_category_id=link.category_id, p_kind="new", p_reason=d.get("reason"), p_link_id=link.id, p_event_id=ev.id,
+                          labels=[])
             db.add(a)
             db.flush()
             log(db, a, "proposed_new", "AI", link=link.url, reason=d.get("reason"))
             res.update(article_id=a.id, result="proposed")
         elif d["action"] in ("update", "remove"):
             a = db.get(SnArticle, d["article_id"])
-            if a is None or a.status in ("rejected", "removed", "removal"):
-                res["result"] = "skipped"
+            if a is None or a.chatbot_id != link.chatbot_id or not (a.status == "published" or (a.status == "review" and a.content is None)):
+                res["result"] = "skipped"                     # the AI only works on what it was given
             elif sent is not None and current_text(a)[1] != sent.get(a.id):
                 res["result"] = "skipped: a reviewer changed the article while the AI was reading it"
+            elif d["action"] == "update" and a.p_stage == "draft":
+                res["result"] = "skipped: a person is editing it"
             elif d["action"] == "update":
-                if a.status == "approved":
-                    a.status, a.detected_at = "changed", now()
-                    a.p_category_id, a.p_labels = a.category_id, sorted(set(a.labels or []) | {"AI update"})
-                else:                                         # still waiting: revise the waiting proposal
-                    a.p_labels = sorted(set(a.p_labels or []) | {"AI update"})   # an import keeps p_kind "import"
-                a.p_title, a.p_content = d["title"] or a.p_title, d["content"]
+                if a.status == "published" and not has_proposal(a):
+                    a.p_category_id, a.p_stage, a.p_kind, a.detected_at = a.category_id, "review", "update", now()
+                a.p_title, a.p_content = d["title"] or a.p_title or a.title, d["content"]   # else revise the change in review
                 a.p_reason, a.p_link_id, a.p_event_id = d.get("reason"), link.id, ev.id
-                if a.p_kind != "import":
-                    a.p_kind = "update"
                 log(db, a, "ai_update", "AI", link=link.url, reason=d.get("reason"))
                 res["result"] = "proposed"
-            else:
-                if a.status == "approved":
-                    clear_proposal(a)
-                    a.status, a.detected_at, a.p_kind = "removal", now(), "remove"
-                    a.p_reason, a.p_link_id, a.p_event_id = d.get("reason"), link.id, ev.id
-                else:
-                    a.p_labels = sorted(set(a.p_labels or []) | {"AI suggests removing"})
-                    a.p_reason = d.get("reason")
+            elif a.status == "published" and not has_proposal(a):
+                a.status, a.detected_at, a.p_kind = "pending_retirement", now(), "remove"
+                a.p_reason, a.p_link_id, a.p_event_id = d.get("reason"), link.id, ev.id
                 log(db, a, "ai_remove", "AI", link=link.url, reason=d.get("reason"))
                 res["result"] = "proposed"
+            else:
+                res["result"] = "skipped: a change is waiting on it"
         else:
             res.setdefault("result", "no change")
         out.append(res)
@@ -482,16 +653,17 @@ def add_link(db: Session, bot: Chatbot, category_id: int, url: str, actor: str, 
 
 # ── publishing ────────────────────────────────────────────────────────────────
 
-def live_items(db: Session, bot: Chatbot) -> list[dict]:
+def release_items(db: Session, bot: Chatbot) -> list[dict]:
+    """What a release holds: every published, pending-retirement and retired article, with its published text
+    (never a pending change), labelled [state, flags…]."""
     cats = {c.id: c for c in db.scalars(select(SnCategory).where(SnCategory.chatbot_id == bot.id))}
-    links = {l.id: l.url for l in db.scalars(select(SnLink).where(SnLink.chatbot_id == bot.id))}
     items = []
-    for a in db.scalars(select(SnArticle).where(SnArticle.chatbot_id == bot.id, SnArticle.status.in_(LIVE), SnArticle.content.is_not(None))):
+    for a in db.scalars(select(SnArticle).where(SnArticle.chatbot_id == bot.id, SnArticle.status.in_(RELEASED), SnArticle.content.is_not(None))):
         c = cats.get(a.category_id)
         items.append({
             "entry_id": a.id, "title": a.title, "content": a.content, "category_id": a.category_id,
             "category": c.path if c else "Uncategorized", "category_position": c.position if c else 99999, "color": "slate",
-            "secondary": [], "labels": [x for x in a.labels or [] if x not in ("AI update", "New from link")],
+            "secondary": [], "labels": [STATE_LABEL[a.status], *(a.labels or [])],
             "number": a.number, "source_url": kb_url(a.number), "source_title": a.number,
             "manual_edit": False, "revision": a.revision, "_order": (a.number or "~", a.id),
         })
@@ -507,9 +679,9 @@ def latest(db: Session, bot: Chatbot) -> SnVersion | None:
 
 def draft(db: Session, bot: Chatbot) -> dict:
     last = latest(db, bot)
-    items = live_items(db, bot)
+    items = release_items(db, bot)
     changes = publish.compare(last.items if last else [], items)
-    waiting = db.scalar(select(func.count()).select_from(SnArticle).where(SnArticle.chatbot_id == bot.id, SnArticle.status.in_(QUEUE))) or 0
+    waiting = db.scalar(select(func.count()).select_from(SnArticle).where(SnArticle.chatbot_id == bot.id, todo_clause())) or 0
     return {"base_version": last.number if last else None, "next_version": (last.number if last else 0) + 1,
             "changes": changes, "counts": publish.counts(changes), "total": len(items), "waiting_review": waiting}
 
@@ -517,13 +689,13 @@ def draft(db: Session, bot: Chatbot) -> dict:
 def publish_version(db: Session, bot: Chatbot, note: str, actor: str) -> SnVersion:
     d = draft(db, bot)
     if not d["changes"]:
-        raise SnError("Nothing has changed since the last published version.")
-    items = live_items(db, bot)
+        raise SnError("Nothing has changed since the last release.")
+    items = release_items(db, bot)
     v = SnVersion(chatbot_id=bot.id, number=d["next_version"], note=note.strip(), created_by=actor, items=items,
                   changes=d["changes"], stats={**d["counts"], "total": len(items)})
     db.add(v)
     st = v.stats
-    record(db, bot.id, "published", actor, f"Published ServiceNow version {v.number}: {st.get('added', 0)} added, {st.get('modified', 0)} modified, "
+    record(db, bot.id, "published", actor, f"Released ServiceNow version {v.number}: {st.get('added', 0)} added, {st.get('modified', 0)} modified, "
            f"{st.get('removed', 0)} removed ({st.get('total', 0)} articles)", version=v.number)
     db.commit()
     return v
