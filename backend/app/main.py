@@ -454,13 +454,17 @@ def pages_bulk(b: PagesIn, bot: Chatbot = Depends(get_bot), who: str = Depends(a
 
 
 @api.get("/api/chatbots/{key}/activity")
-def activity(area: str | None = None, limit: int = 200, bot: Chatbot = Depends(get_bot), db: Session = Depends(get_db)):
+def activity(area: str | None = None, actions: str | None = None, limit: int = 200, bot: Chatbot = Depends(get_bot),
+             db: Session = Depends(get_db)):
     q = select(Activity).where(Activity.chatbot_id == bot.id)
     if area:
         q = q.where(Activity.area == area)
+    if actions:
+        q = q.where(Activity.action.in_(actions.split(",")))
     rows = db.scalars(q.order_by(Activity.id.desc()).limit(min(limit, 1000))).all()
     counts = dict(db.execute(select(Activity.area, func.count()).where(Activity.chatbot_id == bot.id).group_by(Activity.area)).all())
-    return {"counts": counts, "items": [{"id": a.id, "area": a.area, "action": a.action, "actor": a.actor, "summary": a.summary,
+    by_action = dict(db.execute(select(Activity.action, func.count()).where(Activity.chatbot_id == bot.id).group_by(Activity.action)).all())
+    return {"counts": counts, "actions": by_action, "items": [{"id": a.id, "area": a.area, "action": a.action, "actor": a.actor, "summary": a.summary,
                                          "detail": a.detail, "created_at": a.created_at} for a in rows]}
 
 
