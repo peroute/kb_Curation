@@ -3,11 +3,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8010";
 
-export function reviewer(): string {
-  if (typeof window === "undefined") return "Reviewer";
-  return localStorage.getItem("kb-reviewer") || "Reviewer";
-}
-
 export async function api<T = unknown>(path: string, opts: { method?: string; body?: unknown } = {}): Promise<T> {
   const r = await fetch(API + path, {
     method: opts.method ?? (opts.body ? "POST" : "GET"),

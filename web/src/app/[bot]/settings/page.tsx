@@ -6,6 +6,42 @@ import { useBot } from "@/components/shell";
 import { Button, Card, ErrorNote, inputCls, Label, Loading, Modal, Page, PageHeader, useToast } from "@/components/ui";
 import { cn, DOT } from "@/lib/utils";
 
+function PasswordCard() {
+  const toast = useToast();
+  const [pw, setPw] = useState({ current: "", next: "", again: "" });
+  const [busy, setBusy] = useState(false);
+  const set = (k: keyof typeof pw) => (e: React.ChangeEvent<HTMLInputElement>) => setPw({ ...pw, [k]: e.target.value });
+  const mismatch = pw.again.length > 0 && pw.again !== pw.next;
+  const ready = pw.current && pw.next.length >= 8 && pw.next === pw.again;
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api("/api/me/password", { body: { current: pw.current, new: pw.next } });
+      setPw({ current: "", next: "", again: "" });
+      toast("Password changed. Other devices were signed out.");
+    } catch (err) { toast((err as Error).message, true); } finally { setBusy(false); }
+  };
+  return (
+    <Card className="mt-6 max-w-md p-5">
+      <h2 className="mb-1 text-sm font-semibold">Your password</h2>
+      <p className="mb-4 text-[13px] text-muted">At least 8 characters. Changing it signs you out on your other devices.</p>
+      <form onSubmit={save}>
+        <Label>Current password</Label>
+        <input type="password" autoComplete="current-password" className={inputCls} value={pw.current} onChange={set("current")} />
+        <div className="h-3" />
+        <Label>New password</Label>
+        <input type="password" autoComplete="new-password" className={inputCls} value={pw.next} onChange={set("next")} />
+        <div className="h-3" />
+        <Label>New password again</Label>
+        <input type="password" autoComplete="new-password" className={inputCls} value={pw.again} onChange={set("again")} />
+        {mismatch && <p className="mt-2 text-sm text-red-600">The new passwords don&rsquo;t match.</p>}
+        <Button type="submit" variant="primary" busy={busy} disabled={!ready} className="mt-4">Change password</Button>
+      </form>
+    </Card>
+  );
+}
+
 type Cats = { categories: Category[]; uncategorized: { total: number; waiting: number }; ai: boolean };
 
 export default function SettingsPage() {
@@ -63,6 +99,7 @@ export default function SettingsPage() {
           {data.uncategorized.total > 0 && <p className="border-t border-line bg-amber-50 px-5 py-2.5 text-xs text-amber-900">{data.uncategorized.total} entries have no category yet. Open Review → Uncategorized to file them.</p>}
         </Card>
       )}
+      <PasswordCard />
       {edit && <EditCategory bot={bot} cat={edit} onClose={() => setEdit(null)} onDone={() => { setEdit(null); reload(); }} />}
     </Page>
   );
