@@ -5,6 +5,7 @@ import type { Change, DiffLine } from "./api";
 export type SnState = "draft" | "review" | "published" | "pending_retirement" | "retired";
 export type SnKind = "import" | "update" | "new" | "remove" | "servicenow" | "written" | "edit";
 export type SnLinkStatus = "pending" | "ok" | "error" | "checking";
+export type WordSeg = { t: "=" | "-" | "+"; s: string };
 
 export type SnArticle = {
   id: number; status: SnState; p_stage: "draft" | "review" | null; flags: string[]; title: string; excerpt?: string; content?: string; category_id: number | null; category: string | null;
@@ -17,6 +18,8 @@ export type SnArticleDetail = SnArticle & {
   valid_to: string | null; template: string | null; sn_updated: string | null;
   diff?: DiffLine[]; added?: number; removed?: number; diff_base: "approved" | "servicenow" | null;
   link: { id: number; url: string; title: string | null } | null;
+  word_diff: WordSeg[] | null; same_as_servicenow: boolean; in_release: number | null;
+  pages: { id: number; url: string; title: string | null; status: SnLinkStatus }[];
   history: { id: number; action: string; actor: string; detail: Record<string, unknown>; created_at: string }[];
 };
 export type SnLink = {

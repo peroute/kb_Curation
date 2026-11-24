@@ -197,7 +197,7 @@ function CategoryDrawer({ bot, cat, onClose, onChanged }: { bot: string; cat: Sn
       {!arts.data ? <Loading /> : arts.data.articles.length === 0 ? <p className="text-[13px] text-muted">No articles in this category.</p> : (
         <div className="divide-y divide-line rounded-xl border border-line">
           {arts.data.articles.map((a) => (
-            <Link key={a.id} href={`/${bot}/servicenow/review?article=${a.id}&status=${a.status === "published" || a.status === "draft" ? a.status : "queue"}`} className="flex items-center gap-3 px-3.5 py-2.5 hover:bg-subtle">
+            <Link key={a.id} href={`/${bot}/servicenow/article/${a.id}`} className="flex items-center gap-3 px-3.5 py-2.5 hover:bg-subtle">
               <span className="w-20 shrink-0 font-mono text-[11px] text-muted">{a.number ?? "new"}</span>
               <span className="min-w-0 flex-1 truncate text-[13px]">{a.title}</span>
               {a.category !== cat.path && <span className="max-w-40 shrink-0 truncate text-[11px] text-muted">{a.category?.split(" > ").at(-1)}</span>}

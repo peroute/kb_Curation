@@ -58,7 +58,7 @@ export default function HistoryPage() {
                       <span className={cn("mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg", G?.color ?? "bg-neutral-100 text-neutral-600")}><Icon className="size-3.5" /></span>
                       <div className="min-w-0 flex-1">
                         {i.detail.article_id
-                          ? <Link href={`/${bot}/servicenow/review?article=${i.detail.article_id}`} className="text-[13px] text-neutral-800 hover:underline">{i.summary}</Link>
+                          ? <Link href={`/${bot}/servicenow/article/${i.detail.article_id}`} className="text-[13px] text-neutral-800 hover:underline">{i.summary}</Link>
                           : <p className="text-[13px] text-neutral-800">{i.summary}</p>}
                         {i.detail.note && <p className="mt-0.5 text-xs italic text-muted">“{i.detail.note}”</p>}
                         {i.detail.urls && i.detail.urls.length > 1 && (

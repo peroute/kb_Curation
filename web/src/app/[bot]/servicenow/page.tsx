@@ -28,7 +28,7 @@ export default function SnTodoPage() {
   const checked = new Set((links.data ?? []).filter((l) => l.last_checked_at && now - new Date(l.last_checked_at).getTime() < DAY).map((l) => l.url)).size;
   const changes = draft.data?.changes ?? [];
   const last = o.data?.published;
-  const open = (a: SnArticle) => `/${bot}/servicenow/review?article=${a.id}&status=queue`;
+  const open = (a: SnArticle) => `/${bot}/servicenow/article/${a.id}?from=todo`;
 
   return (
     <Page>

@@ -45,8 +45,8 @@ export default function SnPublishPage() {
           <div className="min-w-0">
             {d.changes.length === 0 ? (
               <Card>
-                <Empty icon={<CheckCircle2 className="size-5" />} title={d.base_version ? `Everything published is in version ${d.base_version}` : "Nothing published yet"} action={d.waiting_review > 0 && <Link href={`/${bot}/servicenow/review`}><Button variant="primary">Review {plural(d.waiting_review, "article")}</Button></Link>}>
-                  {d.base_version ? "Publish or retire articles in Review, then come back to release a new version." : "Publish articles in Review, then come back to release the first version."}
+                <Empty icon={<CheckCircle2 className="size-5" />} title={d.base_version ? `Everything published is in version ${d.base_version}` : "Nothing published yet"} action={d.waiting_review > 0 && <Link href={`/${bot}/servicenow`}><Button variant="primary">Open To do ({d.waiting_review})</Button></Link>}>
+                  {d.base_version ? "Publish or retire articles in To do, then come back to release a new version." : "Publish articles in To do, then come back to release the first version."}
                 </Empty>
               </Card>
             ) : (
@@ -64,7 +64,7 @@ export default function SnPublishPage() {
             <Card className="divide-y divide-line">
               {!versions.data?.length && <p className="px-5 py-8 text-center text-sm text-muted">No versions released yet.</p>}
               {versions.data?.map((v, i) => (
-                <Link key={v.id} href={`/${bot}/servicenow/kb?version=${v.number}`} className="flex items-center gap-4 px-5 py-3.5 hover:bg-subtle">
+                <Link key={v.id} href={`/${bot}/servicenow/publish/${v.number}`} className="flex items-center gap-4 px-5 py-3.5 hover:bg-subtle">
                   <span className={cn("flex size-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold", i === 0 ? "bg-ink text-white" : "bg-neutral-100 text-neutral-600")}>v{v.number}</span>
                   <div className="min-w-0 flex-1">
                     <p className="flex items-center gap-2 text-[13px] font-medium">{v.note || `Version ${v.number}`} {i === 0 && <Badge tone="green" dot>Latest</Badge>}</p>

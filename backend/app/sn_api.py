@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from . import docgen, servicenow as sn, sn_ai
 from .config import DATA_DIR, PUBLIC_API_BASE, SN_IMPORT_TOKEN, SN_MODEL
 from .db import get_db
-from .diffing import line_diff
+from .diffing import line_diff, word_diff
 from .models import Activity, Chatbot, SnArticle, SnArticleEvent, SnAsset, SnCategory, SnLink, SnLinkEvent, SnVersion
 from .users import actor, current_user
 
@@ -295,6 +295,22 @@ def _detail(db: Session, a: SnArticle) -> dict:
     elif a.status in ("draft", "review") and a.sn_content is not None and (a.p_content or "") != a.sn_content:
         d["diff"], d["added"], d["removed"] = line_diff(a.sn_content, a.p_content or "", context=3)
         d["diff_base"] = "servicenow"
+    shown_text = a.p_content if sn.has_proposal(a) else a.content
+    d["word_diff"] = None
+    if a.status != "pending_retirement" and d["diff_base"] == "approved":
+        d["word_diff"] = word_diff(a.content or "", a.p_content or "")
+    elif d["diff_base"] == "servicenow":
+        d["word_diff"] = word_diff(a.sn_content or "", a.p_content or "")
+    d["same_as_servicenow"] = shown_text == a.sn_content
+    up, c = set(), cats.get(a.category_id)
+    while c and c.id not in up:            # the article's category and its ancestors
+        up.add(c.id)
+        c = cats.get(c.parent_id)
+    pages = db.scalars(select(SnLink).where(SnLink.chatbot_id == a.chatbot_id, (SnLink.article_id == a.id)
+                                            | (SnLink.article_id.is_(None) & SnLink.category_id.in_(up))).order_by(SnLink.id))
+    d["pages"] = [{"id": l.id, "url": l.url, "title": l.title, "status": l.status} for l in pages]
+    v = db.scalars(select(SnVersion).where(SnVersion.chatbot_id == a.chatbot_id).order_by(SnVersion.number.desc()).limit(1)).first()
+    d["in_release"] = v.number if v and any(i.get("entry_id") == a.id for i in v.items or []) else None
     l = db.get(SnLink, a.p_link_id) if a.p_link_id else None
     d["link"] = {"id": l.id, "url": l.url, "title": l.title} if l else None
     d["history"] = [{"id": h.id, "action": h.action, "actor": h.actor, "detail": h.detail, "created_at": h.created_at}
