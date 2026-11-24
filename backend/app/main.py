@@ -86,7 +86,8 @@ async def lifespan(_: FastAPI):
         con.exec_driver_sql("ALTER TABLE entries ADD COLUMN IF NOT EXISTS in_scope BOOLEAN")
         con.exec_driver_sql("ALTER TABLE entries ADD COLUMN IF NOT EXISTS scope_verdict BOOLEAN")
     seed()
-    pipeline.start_background()
+    # Previous architecture, hidden for now: the website crawler and its schedule (it can call OpenAI on every run).
+    # pipeline.start_background()
     servicenow.start_background()
     yield
 

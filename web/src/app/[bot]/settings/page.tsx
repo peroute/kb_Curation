@@ -1,10 +1,7 @@
 "use client";
-import { Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
 import { useState } from "react";
-import { api, useApi, type Category } from "@/lib/api";
-import { useBot } from "@/components/shell";
-import { Button, Card, ErrorNote, inputCls, Label, Loading, Modal, Page, PageHeader, useToast } from "@/components/ui";
-import { cn, DOT } from "@/lib/utils";
+import { api } from "@/lib/api";
+import { Button, Card, inputCls, Label, Page, PageHeader, useToast } from "@/components/ui";
 
 function PasswordCard() {
   const toast = useToast();
@@ -23,7 +20,7 @@ function PasswordCard() {
     } catch (err) { toast((err as Error).message, true); } finally { setBusy(false); }
   };
   return (
-    <Card className="mt-6 max-w-md p-5">
+    <Card className="max-w-md p-5">
       <h2 className="mb-1 text-sm font-semibold">Your password</h2>
       <p className="mb-4 text-[13px] text-muted">At least 8 characters. Changing it signs you out on your other devices.</p>
       <form onSubmit={save}>
@@ -42,9 +39,25 @@ function PasswordCard() {
   );
 }
 
+export default function SettingsPage() {
+  return (
+    <Page>
+      <PageHeader title="Settings" description="Your account." />
+      <PasswordCard />
+    </Page>
+  );
+}
+
+// Previous architecture, hidden for now: categories of the website crawl (its pages are hidden in the sidebar too).
+// To bring it back, restore these imports:
+//   import { Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
+//   import { useApi, type Category } from "@/lib/api";
+//   import { useBot } from "@/components/shell";
+//   ErrorNote, Loading, Modal from "@/components/ui";   import { cn, DOT } from "@/lib/utils";
+/*
 type Cats = { categories: Category[]; uncategorized: { total: number; waiting: number }; ai: boolean };
 
-export default function SettingsPage() {
+function CategorySettings() {
   const bot = useBot();
   const toast = useToast();
   const { data, error, reload } = useApi<Cats>(`/api/chatbots/${bot}/categories`);
@@ -137,3 +150,4 @@ function EditCategory({ bot, cat, onClose, onDone }: { bot: string; cat: Partial
     </Modal>
   );
 }
+*/
