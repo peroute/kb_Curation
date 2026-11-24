@@ -8,7 +8,7 @@ import secrets
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from . import docgen, servicenow as sn, sn_ai
@@ -174,6 +174,10 @@ def delete_link(lid: int, who: str = Depends(actor), db: Session = Depends(get_d
     l = db.get(SnLink, lid)
     if l:
         sn.record(db, l.chatbot_id, "link_removed", who, f"Removed the link {l.url}")
+        heir = next((x for x in sn.siblings(db, l) if x.id != l.id), None)
+        if heir:                                              # the page is still watched: its history moves, not dies
+            db.execute(update(SnLinkEvent).where(SnLinkEvent.link_id == l.id).values(link_id=heir.id))
+            db.execute(update(SnArticle).where(SnArticle.p_link_id == l.id).values(p_link_id=heir.id))
         db.delete(l)
         db.commit()
     return {"ok": True}

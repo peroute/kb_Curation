@@ -208,7 +208,7 @@ function Inner() {
                 {p.status === "error" && <span className="size-1.5 shrink-0 rounded-full bg-red-500" aria-label="Can't read this page" />}
                 <span className="truncate">{p.title || shortUrl(p.url)}</span><ExternalLink className="size-3 shrink-0 text-muted" />
               </a>
-            )) : <p className="text-muted">No web page linked yet. <Link href={`/${bot}/servicenow/categories`} className="underline">Web pages</Link></p>}
+            )) : <p className="text-muted">No web page linked yet. <Link href={`/${bot}/servicenow/web-pages`} className="underline">Web pages</Link></p>}
           </Field>
           {a.history.length > 0 && (
             <Field label="History">

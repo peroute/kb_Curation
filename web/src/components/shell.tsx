@@ -1,5 +1,5 @@
 "use client";
-import { BookOpenCheck, Check, ChevronDown, ChevronsUpDown, Globe, History, ListChecks, LogOut, Plus, Settings, UserRound } from "lucide-react";
+import { BookOpenCheck, Check, ChevronDown, ChevronsUpDown, Globe, History, Info, ListChecks, LogOut, Plus, Settings, UserRound } from "lucide-react";
 import Link from "next/link";
 import { useParams, usePathname, useRouter } from "next/navigation";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -31,7 +31,7 @@ const NAV: { group?: string; items: { href: string; label: string; icon: typeof 
   { items: [
     { href: "/servicenow", label: "To do", icon: ListChecks, badge: "sn", exact: true },
     { href: "/servicenow/kb", label: "Knowledge base", icon: BookOpenCheck },
-    { href: "/servicenow/categories", label: "Web pages", icon: Globe },
+    { href: "/servicenow/web-pages", label: "Web pages", icon: Globe },
     { href: "/history", label: "History", icon: History },
   ] },
 ];
@@ -120,6 +120,10 @@ export function Shell({ children }: { children: ReactNode }) {
             </div>
           ))}
         </nav>
+
+        <Link href={`/${bot}/servicenow/how-it-works`} className={cn("mx-3 mb-2 flex h-8 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium", path.endsWith("/how-it-works") ? "bg-neutral-200/70 text-ink" : "text-neutral-500 hover:bg-neutral-200/40 hover:text-ink")}>
+          <Info className="size-4" strokeWidth={1.8} /> How it works
+        </Link>
 
         <div className="relative border-t border-line p-3" ref={meMenu}>
           {meOpen && (

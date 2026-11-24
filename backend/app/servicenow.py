@@ -13,7 +13,7 @@ from collections.abc import Callable
 from datetime import timedelta
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, select, tuple_
 from sqlalchemy.orm import Session
 
 from . import publish, sn_ai
@@ -484,76 +484,96 @@ def apply_decisions(db: Session, link: SnLink, ev: SnLinkEvent, decisions: list[
     return out
 
 
+def siblings(db: Session, link: SnLink) -> list[SnLink]:
+    """Every link of the same chatbot with the same address: one web page, checked once for all its categories."""
+    return list(db.scalars(select(SnLink).where(SnLink.chatbot_id == link.chatbot_id, SnLink.url == link.url).order_by(SnLink.id)))
+
+
 def check_link(link_id: int, trigger: str = "manual", actor: str = "system", audit: bool = False) -> None:
+    """Check one web page for every category it is linked to: one fetch, one AI call, the outcome written to every sibling link."""
     db = SessionLocal()
     try:
         link = db.get(SnLink, link_id)
         if link is None:
             return
-        link.status = "checking"
+        sibs = siblings(db, link)
+        for l in sibs:
+            l.status = "checking"
         db.commit()
-        cat = db.get(SnCategory, link.category_id)
         ev = SnLinkEvent(chatbot_id=link.chatbot_id, link_id=link.id, kind="audit" if audit else "changed", trigger=trigger, actor=actor)
         try:
             page = _fetch(link.url)
         except (httpx.HTTPError, SnError) as e:
-            link.status, link.error, link.last_checked_at = "error", str(e) or type(e).__name__, now()
-            ev.kind, ev.error, ev.summary = "error", link.error, f"Could not read the page: {link.error}"
+            err = str(e) or type(e).__name__
+            for l in sibs:
+                l.status, l.error, l.last_checked_at = "error", err, now()
+                _reschedule(l)
+            ev.kind, ev.error, ev.summary = "error", err, f"Could not read the page: {err}"
             db.add(ev)
-            _reschedule(link)
             db.commit()
             return
-        link.title, link.error, link.last_checked_at = page["title"], None, now()
-        first = link.content_hash is None
-        if first and not audit:
-            link.text, link.content_hash, link.status = page["text"], page["hash"], "ok"
+        for l in sibs:
+            l.title, l.error, l.last_checked_at = page["title"], None, now()
+        base = next((l for l in sibs if l.content_hash), None)   # a link added later has no baseline yet: use a sibling's
+        if base is None and not audit:
+            for l in sibs:
+                l.text, l.content_hash, l.status = page["text"], page["hash"], "ok"
+                _reschedule(l)
             ev.kind, ev.summary = "baseline", "First read of the page. Future changes on it will be compared with this."
             db.add(ev)
-            _reschedule(link)
             db.commit()
             return
-        if not audit and page["hash"] == link.content_hash:
-            link.status = "ok"
-            _reschedule(link)
+        if not audit and page["hash"] == base.content_hash:
+            for l in sibs:
+                l.text, l.content_hash, l.status = base.text, base.content_hash, "ok"
+                _reschedule(l)
             db.commit()
             return
-        diff, added, removed = line_diff(link.text or "", page["text"]) if not audit else ([], 0, 0)
+        diff, added, removed = line_diff(base.text or "", page["text"]) if not audit else ([], 0, 0)
         ev.diff, ev.added, ev.removed = diff, added, removed
         db.add(ev)
-        arts = _articles_for(db, link)
-        payload = [{"id": a.id, "title": current_text(a)[0], "content": current_text(a)[1]} for a in arts]
+        arts = {a.id: a for l in sibs for a in _articles_for(db, l)}
+        payload = [{"id": a.id, "title": current_text(a)[0], "content": current_text(a)[1]} for a in sorted(arts.values(), key=lambda a: a.id)]
+        cats = ", ".join(dict.fromkeys(c.path for c in (db.get(SnCategory, l.category_id) for l in sibs) if c))
+        sib_ids, url = [l.id for l in sibs], link.url
         db.commit()                                           # no transaction stays open while the AI reads
         try:
-            decisions = sn_ai.reconcile(cat.path if cat else "", link.url, diff, page["text"], payload, audit=audit)
+            decisions = sn_ai.reconcile(cats, url, diff, page["text"], payload, audit=audit)
         except sn_ai.AIError as e:
             ev.error = str(e)
             ev.summary = ("The page changed, but the AI could not review it: " if not audit else "The AI check failed: ") + str(e)
-            link.status, link.error = "error", str(e)        # the old text is kept, so the next check sees the change again
-            _reschedule(link)
+            for l in sibs:                                    # the old text is kept, so the next check sees the change again
+                l.status, l.error = "error", str(e)
+                _reschedule(l)
             db.commit()
             return
-        link_id_, ev_id = link.id, ev.id
-        ev.decisions = apply_decisions(db, link, ev, decisions, {p["id"]: p["content"] for p in payload})
-        link, ev = db.get(SnLink, link_id_), db.get(SnLinkEvent, ev_id)
+        ev_id = ev.id
+        # shortcut: a new article goes to the first linked category; the reviewer can change it
+        ev.decisions = apply_decisions(db, sibs[0], ev, decisions, {p["id"]: p["content"] for p in payload})
+        ev = db.get(SnLinkEvent, ev_id)
+        sibs = [db.get(SnLink, i) for i in sib_ids]
+        sibs = [l for l in sibs if l is not None]             # a person may have removed a link meanwhile
         n = {k: sum(1 for d in ev.decisions if d["action"] == k and d.get("result") == "proposed") for k in ("update", "new", "remove")}
         bits = [f"{n['update']} article update{'s' if n['update'] != 1 else ''}"] if n["update"] else []
         bits += [f"{n['new']} new article{'s' if n['new'] != 1 else ''}"] if n["new"] else []
         bits += [f"{n['remove']} removal{'s' if n['remove'] != 1 else ''}"] if n["remove"] else []
         ev.summary = (("Checked the articles against the page: " if audit else f"The page changed (+{added} −{removed} lines): ")
                       + (", ".join(bits) + " proposed for review" if bits else "no article needs to change"))
-        if not audit:
-            link.text, link.content_hash, link.last_changed_at = page["text"], page["hash"], now()
-        link.status = "ok"
-        record(db, link.chatbot_id, "link_check" if not audit else "link_audit", actor if trigger == "manual" else "Schedule",
-               f"{link.url}: {ev.summary}", link_id=link.id, event_id=ev.id, **n)
-        _reschedule(link)
+        for l in sibs:
+            if not audit:
+                l.text, l.content_hash, l.last_changed_at = page["text"], page["hash"], now()
+            l.status = "ok"
+            _reschedule(l)
+        record(db, ev.chatbot_id, "link_check" if not audit else "link_audit", actor if trigger == "manual" else "Schedule",
+               f"{url}: {ev.summary}", link_id=ev.link_id, event_id=ev.id, **n)
         db.commit()
     except Exception as e:                                    # noqa: BLE001
         db.rollback()
         try:
             link = db.get(SnLink, link_id)
             if link:
-                link.status, link.error = "error", f"{type(e).__name__}: {e}"[:500]
+                for l in siblings(db, link):
+                    l.status, l.error = "error", f"{type(e).__name__}: {e}"[:500]
                 db.add(SnLinkEvent(chatbot_id=link.chatbot_id, link_id=link.id, kind="error", trigger=trigger, actor=actor,
                                    error=traceback.format_exc()[-1500:], summary=f"Check failed: {type(e).__name__}"))
                 db.commit()
@@ -600,13 +620,20 @@ def _worker() -> None:
                 _pending.discard(link_id)
 
 
+def due_links(db: Session) -> list[int]:
+    """For each web page with a link due, the lowest link id of its group: the scheduler checks each page once."""
+    due = select(SnLink.chatbot_id, SnLink.url).where(SnLink.schedule_hours.is_not(None), SnLink.next_run_at <= now())
+    return list(db.scalars(select(func.min(SnLink.id)).where(tuple_(SnLink.chatbot_id, SnLink.url).in_(due))
+                           .group_by(SnLink.chatbot_id, SnLink.url)))
+
+
 def _scheduler() -> None:
     while True:
         time.sleep(60)
         db = SessionLocal()
         try:
-            for l in db.scalars(select(SnLink).where(SnLink.schedule_hours.is_not(None), SnLink.next_run_at <= now())):
-                enqueue(l.id, "schedule", "schedule")
+            for i in due_links(db):
+                enqueue(i, "schedule", "schedule")
         except Exception:                                     # noqa: BLE001
             pass
         finally:

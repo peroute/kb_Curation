@@ -68,7 +68,7 @@ export default function SnTodoPage() {
                 <p className="truncate text-[13px] font-medium">{l.title || shortUrl(l.url)}</p>
                 <p className="truncate text-xs text-muted">{l.error}</p>
               </div>
-              <Link href={`/${bot}/servicenow/categories`}><Button>Fix</Button></Link>
+              <Link href={`/${bot}/servicenow/web-pages`}><Button>Fix</Button></Link>
             </div>
           )} />
 
