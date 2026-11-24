@@ -11,10 +11,12 @@ import hmac
 import secrets
 import sys
 
+from fastapi import Cookie, Depends, HTTPException
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .models import LoginSession, User
+from .db import get_db
+from .models import LoginSession, User, now
 
 MIN_PASSWORD = 8
 # scrypt cost: ~50 ms per hash, slow enough to make guessing billions of passwords impractical
@@ -50,9 +52,27 @@ def find_user(db: Session, name: str) -> User | None:
     return db.scalar(select(User).where(func.lower(User.name) == name.strip().lower()))
 
 
+def current_user(kb_session: str | None = Cookie(default=None), db: Session = Depends(get_db)) -> User:
+    """The signed-in user, from the session cookie. 401 when missing, unknown or expired."""
+    s = db.get(LoginSession, token_hash(kb_session)) if kb_session else None
+    if s and s.expires_at < now():
+        db.delete(s)
+        db.commit()
+        s = None
+    user = db.get(User, s.user_id) if s else None
+    if not user:
+        raise HTTPException(401, "Please sign in")
+    return user
+
+
+def actor(user: User = Depends(current_user)) -> str:
+    """Who did it, for History: the signed-in name (FastAPI runs current_user once per request)."""
+    return user.name
+
+
 def add_user(name: str) -> None:
     """Create the user, or reset the password of an existing one. Prompts for the password twice."""
-    from .db import Base, SessionLocal, engine
+    from .db import Base, SessionLocal, engine  # only the command needs these
 
     name = name.strip()
     if not name or len(name) > 80:

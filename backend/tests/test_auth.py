@@ -6,6 +6,7 @@ from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from app.db import get_db
+from app import sn_api
 from app.main import api, app, current_user
 from app.models import LoginSession, User, now
 from app.users import hash_password, token_hash, verify_password
@@ -77,6 +78,27 @@ def test_only_login_is_public() -> None:
     assert {r.path for r in direct if not needs_login(r)} == {"/api/login"}
     locked = [r for r in api.routes if isinstance(r, APIRoute)]
     assert len(locked) >= 44 and all(needs_login(r) for r in locked)  # >= 44 so an empty list can't pass
+
+
+def test_servicenow_routes_need_login_except_images_and_import() -> None:
+    def needs_login(r: APIRoute) -> bool:
+        return any(d.call is current_user for d in r.dependant.dependencies)
+
+    locked = [r for r in sn_api.router.routes if isinstance(r, APIRoute)]
+    assert len(locked) >= 20 and all(needs_login(r) for r in locked)
+    # images are linked from published exports; the import uses its own token, sent from the ServiceNow site
+    public = [r for r in sn_api.public.routes if isinstance(r, APIRoute)]
+    assert {r.path for r in public} == {"/api/servicenow/assets/{sid}", "/api/servicenow/import/{key}",
+                                        "/api/servicenow/import-assets/missing", "/api/servicenow/import-assets/{sid}"}
+    assert not any(needs_login(r) for r in public)
+    imports = [r for r in public if "import" in r.path]
+    assert all(any(d.call is sn_api.import_auth for d in r.dependant.dependencies) for r in imports)
+
+
+def test_servicenow_route_refuses_without_login() -> None:
+    c = client_with(FakeDB())
+    assert c.get("/api/chatbots/k12/servicenow/overview").status_code == 401
+    assert c.post("/api/servicenow/import/k12", json={}).status_code == 403  # token, not login
 
 
 def test_wrong_password_and_unknown_name_look_the_same(jane: User) -> None:

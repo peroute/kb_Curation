@@ -13,15 +13,15 @@ from pydantic import BaseModel
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from . import categorize, docgen, gdocs, pipeline, publish, review, scope
-from .config import DATA_DIR, OPENAI_API_KEY, WEB_ORIGIN
+from . import categorize, docgen, gdocs, pipeline, publish, review, scope, servicenow, sn_api
+from .config import DATA_DIR, EXTRA_ORIGINS, OPENAI_API_KEY, WEB_ORIGIN
 from .crawler import canon
 from .db import Base, SessionLocal, engine, get_db
 from .diffing import line_diff
 from .pipeline import record
 from .models import (Activity, Category, Chatbot, Comment, CrawlRun, Entry, EntryEvent, KbVersion, LoginSession, Page, PageEvent,
-                     ScopeTopic, Source, User, now)
-from .users import MIN_PASSWORD, find_user, hash_password, token_hash, verify_password
+                     ScopeTopic, SnArticle, Source, User, now)
+from .users import MIN_PASSWORD, actor, current_user, find_user, hash_password, token_hash, verify_password
 
 QUEUE = ("new", "changed", "removal")
 
@@ -87,11 +87,12 @@ async def lifespan(_: FastAPI):
         con.exec_driver_sql("ALTER TABLE entries ADD COLUMN IF NOT EXISTS scope_verdict BOOLEAN")
     seed()
     pipeline.start_background()
+    servicenow.start_background()
     yield
 
 
 app = FastAPI(title="KB Curation", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=[WEB_ORIGIN, "http://localhost:3010", "http://127.0.0.1:3010"],
+app.add_middleware(CORSMiddleware, allow_origins=[WEB_ORIGIN, "http://localhost:3010", "http://127.0.0.1:3010", *EXTRA_ORIGINS],
                    allow_methods=["*"], allow_headers=["*"], expose_headers=["Content-Disposition"], allow_credentials=True)
 
 
@@ -102,26 +103,10 @@ SESSION_LIFE = timedelta(days=30)
 DUMMY_HASH = hash_password(secrets.token_hex(8))
 
 
-def current_user(kb_session: str | None = Cookie(default=None), db: Session = Depends(get_db)) -> User:
-    """The signed-in user, from the session cookie. 401 when missing, unknown or expired."""
-    s = db.get(LoginSession, token_hash(kb_session)) if kb_session else None
-    if s and s.expires_at < now():
-        db.delete(s)
-        db.commit()
-        s = None
-    user = db.get(User, s.user_id) if s else None
-    if not user:
-        raise HTTPException(401, "Please sign in")
-    return user
-
-
-def actor(user: User = Depends(current_user)) -> str:
-    """Who did it, for History: the signed-in name (FastAPI runs current_user once per request)."""
-    return user.name
-
-
 # Every route except login is on this router, so none can be left open by mistake.
 api = APIRouter(dependencies=[Depends(current_user)])
+app.include_router(sn_api.router)   # ServiceNow: locked the same way inside sn_api
+app.include_router(sn_api.public)   # ServiceNow: image files and the token-guarded import
 
 
 class LoginIn(BaseModel):
@@ -247,7 +232,8 @@ def chatbots(db: Session = Depends(get_db)):
     out = []
     for b in db.scalars(select(Chatbot).order_by(Chatbot.id)):
         waiting = db.scalar(select(func.count()).select_from(Entry).where(Entry.chatbot_id == b.id, Entry.status.in_(QUEUE)))
-        out.append({"key": b.key, "name": b.name, "description": b.description, "waiting": waiting})
+        sn_waiting = db.scalar(select(func.count()).select_from(SnArticle).where(SnArticle.chatbot_id == b.id, SnArticle.status.in_(QUEUE)))
+        out.append({"key": b.key, "name": b.name, "description": b.description, "waiting": waiting, "sn_waiting": sn_waiting})
     return out
 
 
