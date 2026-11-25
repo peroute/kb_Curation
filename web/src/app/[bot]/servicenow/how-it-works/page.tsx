@@ -13,8 +13,8 @@ const day = (s: string) => new Date(s).toLocaleDateString(undefined, { month: "s
 const LIFE: { s: SnState; d: string; moves: string[]; by: string }[] = [
   { s: "draft", d: "Being written or edited. Not in To do, not in releases.", moves: ["Send for review →"], by: "Anyone who writes" },
   { s: "review", d: "Waiting for a reviewer in To do. AI suggestions start here.", moves: ["Publish →", "← Send back to draft"], by: "A reviewer" },
-  { s: "published", d: "The approved article. Edit starts a new draft version; this one stays published meanwhile.", moves: ["Suggest retiring →"], by: "Anyone, or the AI" },
-  { s: "pending_retirement", d: "Someone thinks it's out of date. Still published until a reviewer decides.", moves: ["Retire →", "← Keep published"], by: "A reviewer" },
+  { s: "published", d: "The approved article. Edit starts a new draft version; this one stays published meanwhile. Reaches the chatbot at the next release.", moves: ["Suggest retiring →"], by: "Anyone, or the AI" },
+  { s: "pending_retirement", d: "Someone, or the AI, thinks it's out of date. Still published until a reviewer decides.", moves: ["Retire →", "← Keep published"], by: "A reviewer" },
   { s: "retired", d: "Out of use. Kept, and still in releases, labeled Retired.", moves: ["Restore (back to draft)"], by: "A reviewer" },
 ];
 
@@ -25,12 +25,12 @@ export default function SnHowItWorksPage() {
   const d = o.data;
 
   const steps: Step[] = d ? [
-    { t: "ServiceNow articles", who: "Once", see: ["See them in Knowledge base", "/servicenow/kb"],
-      d: "The help articles were copied from ServiceNow with their categories, state (draft, in review, published…) and flags (Internal only when there's no \"Public view\").",
+    { t: "ServiceNow articles", who: "Import, can run again", see: ["See them in Knowledge base", "/servicenow/kb"],
+      d: "The help articles come from ServiceNow with their categories, state (draft, in review, published…) and flags (Internal only when there's no \"Public view\"). On a new import: changed only in ServiceNow, ServiceNow wins; changed only here, this app wins; changed in both, ServiceNow's version waits for a reviewer.",
       stat: d.import ? [d.import.articles, `imported ${day(d.import.at)}`] : ["—", "not imported yet"] },
     { t: "Link web pages", you: true, who: "You", see: ["See them in Web pages", "/servicenow/web-pages"],
       d: "Each category is linked to the TTU web pages its articles are based on.", stat: [d.links.total, "links watched"] },
-    { t: "Daily check", who: "Automatic", d: "Once a day each page is read again and compared with the last time.", stat: ["24 h", "between checks"],
+    { t: "Scheduled check", who: "Automatic", d: "Each page is read again on its own schedule (set in Web pages, or checked by hand) and compared with the last time.",
       after: <p className="ml-11 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs text-red-700">If a page can&apos;t be read, it shows in To do → Needs attention</p> },
     { t: "AI suggests a change", who: "Automatic",
       d: <>When a page changed, the AI reads what changed and suggests one of:
@@ -40,9 +40,9 @@ export default function SnHowItWorksPage() {
       d: "Publish it or send it back to draft. For a retirement: retire it or keep it published. Nothing changes without this step." },
     { t: "Release", you: true, who: "You", see: ["Happens in Release", "/servicenow/publish"],
       stat: d.published ? [`v${d.published.number}`, `since ${day(d.published.created_at)}`] : ["—", "none yet"],
-      d: "Saves a numbered version of the whole knowledge base, every article labeled with its state and flags." },
+      d: "Saves a numbered version of the whole knowledge base, every article labeled with its state and flags. A published article reaches the chatbot only in the next release; until then it is \"Published, not released yet\"." },
     { t: "Chatbot answers", who: "Automatic",
-      d: "The chatbot reads the latest release and filters by label: for students and parents, only Published articles without Internal only." },
+      d: <>The chatbot reads the latest release and filters by label: for students and parents, only Published articles without Internal only. Or it takes <b>everything right now</b> (Knowledge base → More), each article labeled with its stage: Draft, In review, Published, not released yet, Released in vN, Pending retirement or Retired.</> },
   ] : [];
 
   return (
@@ -107,7 +107,7 @@ export default function SnHowItWorksPage() {
             <Card className="p-4 text-[13px] leading-relaxed">
               <p className="mb-1.5 text-sm font-semibold">One article, many versions</p>
               <p>ServiceNow keeps each version as its own record. Here, one article keeps one KB number instead, which stops the duplicates.</p>
-              <p className="mt-2 text-muted">The import keeps only the latest version. After that, every Release keeps a full copy of each article.</p>
+              <p className="mt-2 text-muted">The import keeps the newest published version as the article. A newer draft or in-review version waits on it as a change, like an edit made here. After that, every Release keeps a full copy of each article.</p>
             </Card>
           </div>
         </>
