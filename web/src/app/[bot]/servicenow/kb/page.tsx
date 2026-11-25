@@ -50,6 +50,7 @@ export default function SnKbPage() {
                 <a href={exp("md")} className="block rounded-lg px-2.5 py-1.5 hover:bg-neutral-100">Download latest release (Markdown)</a>
               </>
             ) : <p className="px-2.5 py-1.5 text-muted">No release yet</p>}
+            <a href={`${exp("json")}&scope=everything`} title="Every article right now, labelled Draft, In review, Published, not released yet, Released in vN, Pending retirement or Retired" className="block rounded-lg px-2.5 py-1.5 hover:bg-neutral-100">Download everything right now (JSON)</a>
             <Link href={`/${bot}/servicenow/publish`} className="block rounded-lg px-2.5 py-1.5 hover:bg-neutral-100">Past releases</Link>
           </div>
         </details>
@@ -147,3 +148,67 @@ function Tree({ cats, selected, onSelect }: { cats?: SnCategory[]; selected: num
     </Card>
   );
 }
+
+/* Previous architecture: the old single-release KB page (now publish/[number]) with upstream's label colours
+   for the old labels. Kept for reference; not used.
+
+      <PageHeader
+        title="ServiceNow knowledge base"
+        description="The published articles exactly as the chatbot receives them. Change them in Review and publish a new version."
+        actions={
+          <>
+            <a href={exp("json")} className="inline-flex h-9 items-center gap-1.5 rounded-[10px] border border-line bg-white px-3.5 text-sm font-medium hover:bg-subtle"><Download className="size-4" /> JSON for the chatbot</a>
+            <a href={exp("md")} className="inline-flex h-9 items-center gap-1.5 rounded-[10px] border border-line bg-white px-3.5 text-sm font-medium hover:bg-subtle"><Download className="size-4" /> Markdown</a>
+            <a href={`${API}/api/chatbots/${bot}/servicenow/export?format=json&scope=everything`} title="Approved articles plus those not reviewed yet, each labelled with its ServiceNow state and review status"
+              className="inline-flex h-9 items-center gap-1.5 rounded-[10px] border border-line bg-white px-3.5 text-sm font-medium hover:bg-subtle"><Download className="size-4" /> Everything (JSON)</a>
+            <select className="h-9 rounded-[10px] border border-line bg-white px-3 text-sm font-medium" value={v.number} onChange={(e) => router.replace(`/${bot}/servicenow/kb?version=${e.target.value}`)}>
+              {versions.data?.map((x) => <option key={x.id} value={x.number}>Version {x.number}{x.number === latest ? " (live)" : ""}</option>)}
+            </select>
+          </>
+        }
+      />
+      <div className="mb-5 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-2xl border border-line bg-subtle px-4 py-3 text-[13px]">
+        {v.number === latest ? <Badge tone="green" dot>Live</Badge> : <Badge>Older version</Badge>}
+        <span>Version {v.number}{v.note && ` — ${v.note}`}</span>
+        <span className="text-muted">{dateTime(v.created_at)} · {v.created_by} · {plural(v.stats.total ?? 0, "article")}</span>
+      </div>
+      <Tabs className="mb-4" value={tab} onChange={setTab} items={[{ value: "content", label: "Articles", count: v.items?.length }, { value: "changes", label: "Changed in this version", count: v.changes?.length }]} />
+      {tab === "changes" ? <ChangeList changes={v.changes ?? []} openFirst={0} /> : (
+        <div className="grid grid-cols-[260px_1fr] items-start gap-6">
+          <Card className="sticky top-8 max-h-[calc(100vh-6rem)] overflow-y-auto p-2">
+            <button onClick={() => setCat("")} className={cn("flex w-full justify-between rounded-lg px-2.5 py-1.5 text-left text-[13px]", !cat ? "bg-neutral-100 font-medium" : "hover:bg-subtle")}>All <span className="text-muted">{v.items?.length}</span></button>
+            {groups.map(([g, n]) => (
+              <button key={g} onClick={() => { setCat(g); setLimit(30); }} className={cn("flex w-full gap-2 rounded-lg px-2.5 py-1.5 text-left text-[13px]", cat === g ? "bg-neutral-100 font-medium" : "hover:bg-subtle")}>
+                <span className="min-w-0 flex-1 truncate" title={g}>{g.split(" > ").at(-1)}</span><span className="text-muted">{n}</span>
+              </button>
+            ))}
+          </Card>
+          <div className="min-w-0">
+            <div className="relative mb-4">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-neutral-400" />
+              <input className={cn(inputCls, "pl-9")} placeholder="Search the published articles" value={q} onChange={(e) => { setQ(e.target.value); setLimit(30); }} />
+            </div>
+            <div className="space-y-3">
+              {items.slice(0, limit).map((i) => (
+                <Card key={i.entry_id} className="p-5">
+                  <p className="text-xs text-muted">{i.category}</p>
+                  <h3 className="mt-0.5 font-semibold">{i.title}</h3>
+                  {i.number && i.source_url && <a href={i.source_url} target="_blank" rel="noreferrer" className="mt-0.5 inline-flex items-center gap-1 font-mono text-xs text-muted hover:text-ink">{i.number} <ExternalLink className="size-3" /></a>}
+                  {i.labels.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{i.labels.map((l) => <Badge key={l} tone={labelTone(l)}>{l}</Badge>)}</div>}
+                  <Rich className="mt-3" content={i.content} />
+                </Card>
+              ))}
+              {items.length === 0 && <p className="py-10 text-center text-sm text-muted">No articles match.</p>}
+              {items.length > limit && <button onClick={() => setLimit((l) => l + 50)} className="w-full rounded-xl border border-line py-2.5 text-[13px] font-medium text-neutral-600 hover:bg-subtle">Show more ({items.length - limit} remaining)</button>}
+            </div>
+          </div>
+
+/** Status labels in colour, so filters like "published and reviewed" are easy to spot. * /
+function labelTone(l: string): "green" | "amber" | "red" | "blue" | "outline" {
+  if (l === "Published in ServiceNow" || l === "Reviewed in KB Curation") return "green";
+  if (l === "Expired in ServiceNow" || l === "Internal only" || l.startsWith("Pending retirement")) return "red";
+  if (l.endsWith("in ServiceNow") || l === "Not reviewed in KB Curation") return "amber";
+  if (l.startsWith("Not in ServiceNow")) return "blue";
+  return "outline";
+}
+*/

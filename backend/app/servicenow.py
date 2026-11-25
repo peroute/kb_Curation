@@ -30,6 +30,19 @@ RELEASED = ("published", "pending_retirement", "retired")         # what goes in
 STATE_LABEL = {"published": "Published", "pending_retirement": "Pending retirement", "retired": "Retired"}
 INTERNAL = "Internal only"
 
+# Previous architecture (upstream's new/changed/approved lifecycle). Replaced on this branch by
+# STATES / RELEASED / STATE_LABEL. Kept for reference; not called.
+# QUEUE = ("new", "changed", "removal")
+# LIVE = ("approved", "changed", "removal")
+# STATE_LABEL = {"draft": "Draft in ServiceNow", "review": "In review in ServiceNow",
+#                "pending_retirement": "Pending retirement in ServiceNow"}
+# EXPIRED = "Expired in ServiceNow"
+# NEWER = "Newer version in ServiceNow"
+# STATE_WORD = {"draft": "draft", "review": "in-review", "pending_retirement": "pending-retirement", "published": "published"}
+# # Review flags: they say where the record stood in ServiceNow or what the AI did, which helps a reviewer decide but is
+# # not knowledge. They are shown in Review and never kept on approved text or sent to the chatbot.
+# SYSTEM_LABELS = {EXPIRED, NEWER, "AI update", "New from link", "AI suggests removing", *STATE_LABEL.values()}
+
 
 class SnError(Exception):
     pass
@@ -110,6 +123,79 @@ def normalize_flags(flags: list[str], known: list[str]) -> list[str]:
         if f:
             out.setdefault(f.lower(), casing.get(f.lower(), f))
     return list(out.values())[:8]
+
+
+# Previous architecture (upstream's new/changed/approved lifecycle). Replaced on this branch by
+# pick_versions + _merge inside import_kb (one article per KB number). Kept for reference; not called.
+# def _version_rank(state: str | None, updated: str | None) -> tuple:
+#     """Which ServiceNow record of an article to keep: the published one, then the most recently updated."""
+#     return (state == "published", updated or "")
+#
+#
+# def _one_per_number(articles: list[dict]) -> tuple[list[dict], dict[str, dict]]:
+#     """ServiceNow keeps one record per article version (published v1, v2 in review...). Keep one record per KB
+#     number and return, per number, the newer unpublished version whose text differs (if any)."""
+#     groups: dict[str, list[dict]] = {}
+#     out: list[dict] = []
+#     for art in articles:
+#         if art.get("number"):
+#             groups.setdefault(art["number"], []).append(art)
+#         else:
+#             out.append(art)
+#     newer: dict[str, dict] = {}
+#     for number, rows in groups.items():
+#         rows.sort(key=lambda r: _version_rank(r.get("state"), r.get("updated")), reverse=True)
+#         base = rows[0]
+#         out.append(base)
+#         text = article_content(base, SN_INSTANCE + "/")
+#         later = [r for r in rows[1:] if (r.get("updated") or "") > (base.get("updated") or "")
+#                  and norm(article_content(r, SN_INSTANCE + "/")) != norm(text)]
+#         if later:
+#             newer[number] = max(later, key=lambda r: r.get("updated") or "")
+#     return out, newer
+#
+#
+# def merge_versions(db: Session, bot: Chatbot, actor: str = "system") -> dict:
+#     """Collapse articles that came in more than once (one row per ServiceNow version) into one per KB number.
+#     The published version stays. If a newer version says something different, its text becomes a proposal on the
+#     kept article, so a reviewer decides whether it goes live. The extra rows are deleted."""
+#     stats = {"numbers": 0, "removed": 0, "proposals": 0}
+#     rows = db.scalars(select(SnArticle).where(SnArticle.chatbot_id == bot.id, SnArticle.number.is_not(None))).all()
+#     groups: dict[str, list[SnArticle]] = {}
+#     for a in rows:
+#         groups.setdefault(a.number, []).append(a)
+#     text = lambda a: (a.content if a.content is not None else a.p_content) or ""   # noqa: E731
+#     for number, items in groups.items():
+#         if len(items) < 2:
+#             continue
+#         items.sort(key=lambda a: (_version_rank(a.sn_state, a.sn_updated), a.status == "approved"), reverse=True)
+#         base, others = items[0], items[1:]
+#         diff = [o for o in others if norm(text(o)) != norm(text(base)) and (o.sn_updated or "") >= (base.sn_updated or "")]
+#         newer = max(diff, key=lambda o: o.sn_updated or "", default=None)
+#         if newer is not None:
+#             reason = (f"ServiceNow also has a newer {STATE_WORD.get(newer.sn_state, newer.sn_state)} version of {number} with "
+#                       "different text. Approve to use the newer text, or reject to keep the published text.")
+#             if base.status == "approved":
+#                 base.status, base.detected_at = "changed", now()
+#                 base.p_title, base.p_content = (newer.title or newer.p_title or base.title), text(newer)
+#                 base.p_category_id, base.p_kind, base.p_reason = base.category_id, "update", reason
+#                 base.p_labels = sorted(set(base.labels or []) | {NEWER})
+#                 stats["proposals"] += 1
+#             elif has_proposal(base):
+#                 base.p_labels = sorted(set(base.p_labels or []) | {NEWER})
+#                 base.p_reason = base.p_reason or reason
+#         for o in others:
+#             db.execute(update(SnLink).where(SnLink.article_id == o.id).values(article_id=base.id))
+#             db.delete(o)
+#         log(db, base, "merged_versions", actor, number=number, removed=[o.id for o in others],
+#             newer_text=newer is not None)
+#         stats["numbers"] += 1
+#         stats["removed"] += len(others)
+#     if stats["numbers"]:
+#         record(db, bot.id, "merge_versions", actor, f"Merged {stats['numbers']} articles that were imported once per ServiceNow "
+#                f"version: {stats['removed']} extra copies removed, {stats['proposals']} newer texts waiting in Review", **stats)
+#     db.commit()
+#     return stats
 
 
 def import_kb(db: Session, bot: Chatbot, kb: dict, actor: str) -> dict:
@@ -684,20 +770,113 @@ def release_items(db: Session, bot: Chatbot) -> list[dict]:
     """What a release holds: every published, pending-retirement and retired article, with its published text
     (never a pending change), labelled [state, flags…]."""
     cats = {c.id: c for c in db.scalars(select(SnCategory).where(SnCategory.chatbot_id == bot.id))}
+    return _sorted([_item(a, cats, a.title, a.content, a.category_id, STATE_LABEL[a.status]) for a in db.scalars(
+        select(SnArticle).where(SnArticle.chatbot_id == bot.id, SnArticle.status.in_(RELEASED), SnArticle.content.is_not(None)))])
+
+
+def everything_items(db: Session, bot: Chatbot) -> list[dict]:
+    """Every article right now, for a chatbot that filters: drafts and articles in review with their pending text, the
+    rest with their published text. Each gets one stage label: Draft, In review, Published, not released yet,
+    Released in vN (the latest release holds this revision), Pending retirement or Retired."""
+    last = latest(db, bot)
+    released = {(it["entry_id"], it["revision"]) for it in last.items} if last else set()
+    cats = {c.id: c for c in db.scalars(select(SnCategory).where(SnCategory.chatbot_id == bot.id))}
     items = []
-    for a in db.scalars(select(SnArticle).where(SnArticle.chatbot_id == bot.id, SnArticle.status.in_(RELEASED), SnArticle.content.is_not(None))):
-        c = cats.get(a.category_id)
-        items.append({
-            "entry_id": a.id, "title": a.title, "content": a.content, "category_id": a.category_id,
-            "category": c.path if c else "Uncategorized", "category_position": c.position if c else 99999, "color": "slate",
-            "secondary": [], "labels": [STATE_LABEL[a.status], *(a.labels or [])],
-            "number": a.number, "source_url": kb_url(a.number), "source_title": a.number,
-            "manual_edit": False, "revision": a.revision, "_order": (a.number or "~", a.id),
-        })
+    for a in db.scalars(select(SnArticle).where(SnArticle.chatbot_id == bot.id)):
+        if a.status in RELEASED and a.content is not None:
+            version = last.number if (a.id, a.revision) in released else None
+            stage = STATE_LABEL[a.status] if a.status != "published" else (
+                f"Released in v{version}" if version else "Published, not released yet")
+            it = _item(a, cats, a.title, a.content, a.category_id, stage)
+        elif a.status in ("draft", "review") and a.p_content is not None:
+            version, stage = None, "Draft" if a.status == "draft" else "In review"
+            it = _item(a, cats, a.p_title, a.p_content, a.p_category_id or a.category_id, stage)
+        else:
+            continue
+        it["meta"] = {"stage": stage, "released_version": version}   # the JSON export adds these fields to each entry
+        items.append(it)
+    return _sorted(items)
+
+
+def _item(a: SnArticle, cats: dict, title: str | None, content: str, category_id: int | None, stage: str) -> dict:
+    c = cats.get(category_id)
+    return {
+        "entry_id": a.id, "title": title, "content": content, "category_id": category_id,
+        "category": c.path if c else "Uncategorized", "category_position": c.position if c else 99999, "color": "slate",
+        "secondary": [], "labels": [stage, *(a.labels or [])],
+        "number": a.number, "source_url": kb_url(a.number), "source_title": a.number,
+        "manual_edit": False, "revision": a.revision, "_order": (a.number or "~", a.id),
+    }
+
+
+def _sorted(items: list[dict]) -> list[dict]:
     items.sort(key=lambda x: (x["category_position"], x["_order"]))
     for it in items:
         it.pop("_order")
     return items
+
+
+# Previous architecture (upstream's new/changed/approved lifecycle). Replaced on this branch by
+# release_items (publishing). Kept for reference; not called.
+# PUBLISHED_LABEL = "Published in ServiceNow"
+# REVIEWED, NOT_REVIEWED = "Reviewed in KB Curation", "Not reviewed in KB Curation"
+# INTERNAL = "Internal only"
+# SN_STATE_LABEL = {"published": PUBLISHED_LABEL, **STATE_LABEL}
+#
+#
+# def status_of(a: SnArticle, reviewed: bool) -> tuple[list[str], dict]:
+#     """Labels and fields that say where an article stands, worked out from its current state at publish time, so
+#     every item gets them the same way: exactly one ServiceNow state, expired/internal when true, and whether a
+#     person approved it here. The chatbot can filter on either (e.g. only "Published in ServiceNow" + "Reviewed")."""
+#     state = a.sn_state if a.sys_id else None
+#     title, text = (a.title or a.p_title or ""), (a.content or a.p_content or "")
+#     internal = INTERNAL in (a.labels or []) or INTERNAL in (a.p_labels or []) or "INTERNAL" in title or "INTERNAL USE ONLY" in text.upper()
+#     expired = bool(a.sys_id) and _expired(a.valid_to)
+#     labels = [SN_STATE_LABEL.get(state or "", f"{state} in ServiceNow") if a.sys_id else "Not in ServiceNow (added from a TTU page)"]
+#     labels += [EXPIRED] if expired else []
+#     labels += [INTERNAL] if internal else []
+#     labels += [REVIEWED if reviewed else NOT_REVIEWED]
+#     meta = {"servicenow_state": state, "servicenow_expired": expired, "internal_only": internal,
+#             "reviewed_in_kb_curation": reviewed, "reviewed_by": a.reviewer if reviewed else None,
+#             "reviewed_at": a.reviewed_at.isoformat() if reviewed and a.reviewed_at else None}
+#     return labels, meta
+#
+#
+# def _item(a: SnArticle, cats: dict, reviewed: bool) -> dict:
+#     c = cats.get(a.category_id if reviewed else (a.p_category_id or a.category_id))
+#     status_labels, meta = status_of(a, reviewed)
+#     own = [x for x in (a.labels if reviewed else a.p_labels) or [] if x not in SYSTEM_LABELS and x != INTERNAL]
+#     return {
+#         "entry_id": a.id, "title": a.title if reviewed else a.p_title, "content": a.content if reviewed else a.p_content,
+#         "category_id": c.id if c else None, "category": c.path if c else "Uncategorized", "category_position": c.position if c else 99999,
+#         "color": "slate", "secondary": [], "labels": own + status_labels, "meta": meta,
+#         "number": a.number, "source_url": kb_url(a.number), "source_title": a.number,
+#         "manual_edit": False, "revision": a.revision, "_order": (a.number or "~", a.id),
+#     }
+#
+#
+# def _sorted(items: list[dict]) -> list[dict]:
+#     items.sort(key=lambda x: (x["category_position"], x["_order"]))
+#     for it in items:
+#         it.pop("_order")
+#     return items
+#
+#
+# def live_items(db: Session, bot: Chatbot) -> list[dict]:
+#     """What a published version holds: every article a person approved here (its approved text)."""
+#     cats = {c.id: c for c in db.scalars(select(SnCategory).where(SnCategory.chatbot_id == bot.id))}
+#     return _sorted([_item(a, cats, True) for a in db.scalars(select(SnArticle).where(
+#         SnArticle.chatbot_id == bot.id, SnArticle.status.in_(LIVE), SnArticle.content.is_not(None)))])
+#
+#
+# def everything_items(db: Session, bot: Chatbot) -> list[dict]:
+#     """Approved articles plus the ones still waiting for their first review (as imported), each labelled with
+#     whether it was reviewed here. Rejected and removed articles are left out."""
+#     cats = {c.id: c for c in db.scalars(select(SnCategory).where(SnCategory.chatbot_id == bot.id))}
+#     rows = db.scalars(select(SnArticle).where(SnArticle.chatbot_id == bot.id, SnArticle.status.not_in(("rejected", "removed")))).all()
+#     out = [_item(a, cats, True) if a.content is not None else _item(a, cats, False) for a in rows
+#            if a.content is not None or a.p_content is not None]
+#     return _sorted(out)
 
 
 def latest(db: Session, bot: Chatbot) -> SnVersion | None:
@@ -726,3 +905,34 @@ def publish_version(db: Session, bot: Chatbot, note: str, actor: str) -> SnVersi
            f"{st.get('removed', 0)} removed ({st.get('total', 0)} articles)", version=v.number)
     db.commit()
     return v
+
+
+# Previous architecture (upstream's new/changed/approved lifecycle). Replaced on this branch by
+# status-based labels (state is never stored as a label, so there is nothing to clear). Kept for reference; not called.
+# def clear_review_flags(db: Session, bot: Chatbot, actor: str = "system") -> int:
+#     """Remove review flags from approved text (articles approved before flags were left out on approval)."""
+#     n = 0
+#     for a in db.scalars(select(SnArticle).where(SnArticle.chatbot_id == bot.id, SnArticle.status.in_(LIVE))):
+#         kept = [x for x in a.labels or [] if x not in SYSTEM_LABELS]
+#         if kept != list(a.labels or []):
+#             log(db, a, "flags_cleared", actor, removed=[x for x in a.labels or [] if x in SYSTEM_LABELS])
+#             a.labels = kept
+#             n += 1
+#     if n:
+#         record(db, bot.id, "clear_flags", actor, f"Removed ServiceNow workflow labels (draft, in review, pending retirement, "
+#                f"expired) from the approved text of {n} articles; they stay visible in Review only")
+#     db.commit()
+#     return n
+#
+#
+# if __name__ == "__main__":                       # python -m app.servicenow merge-versions | clear-flags
+#     import sys as _sys
+#     cmd = _sys.argv[1:]
+#     if cmd not in (["merge-versions"], ["clear-flags"]):
+#         _sys.exit("usage: python -m app.servicenow merge-versions | clear-flags")
+#     with SessionLocal() as _db:
+#         for _bot in _db.scalars(select(Chatbot).order_by(Chatbot.id)).all():
+#             if cmd == ["merge-versions"]:
+#                 print(_bot.key, merge_versions(_db, _bot, "Duplicate clean-up"))
+#             else:
+#                 print(_bot.key, "articles cleaned:", clear_review_flags(_db, _bot, "Label clean-up"))

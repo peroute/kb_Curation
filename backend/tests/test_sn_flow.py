@@ -257,6 +257,37 @@ def test_release_labels_and_contents(env):
     assert sn.draft(s, bot)["counts"]["modified"] == 1
 
 
+@needs_db
+def test_everything_export_labels_each_stage(env, api_client):
+    s, bot, sn = env
+    rel = published(s, bot, "R", title="rel"); sn.set_flags(s, rel, "Pat", ["Internal only"])
+    chg = published(s, bot, "Live text", title="chg")
+    upd = published(s, bot, "Old text", title="upd")
+    sn.publish_version(s, bot, "", "Rev")                                  # v1 holds rel, chg, upd
+    sn.edit(s, chg, "Pat", content="Draft text")                          # waiting change: the release still has the live text
+    sn.edit(s, upd, "Pat", content="New text"); sn.send_for_review(s, upd, "Pat"); sn.publish_article(s, upd, "Pat")
+    published(s, bot, "L", title="later")
+    published(s, bot, "Gone", title="ret", status="retired")
+    sn.create_article(s, bot, "Pat", title="d", content="D", category_id=None, flags=[], review=False)
+    sn.create_article(s, bot, "Pat", title="r", content="Rv", category_id=None, flags=[], review=True)
+    s.commit()
+    items = {i["title"]: i for i in sn.everything_items(s, bot)}
+    assert set(items) == {"rel", "chg", "upd", "later", "ret", "d", "r"}
+    assert items["rel"]["labels"] == ["Released in v1", "Internal only"]
+    assert items["rel"]["meta"] == {"stage": "Released in v1", "released_version": 1}
+    assert (items["chg"]["labels"], items["chg"]["content"]) == (["Released in v1"], "Live text")
+    assert (items["upd"]["labels"], items["upd"]["content"]) == (["Published, not released yet"], "New text")
+    assert items["upd"]["meta"] == {"stage": "Published, not released yet", "released_version": None}
+    assert items["later"]["labels"] == ["Published, not released yet"]
+    assert items["ret"]["labels"] == ["Retired"]
+    assert (items["d"]["labels"], items["d"]["content"]) == (["Draft"], "D")
+    assert (items["r"]["labels"], items["r"]["content"]) == (["In review"], "Rv")
+    assert "meta" not in sn.release_items(s, bot)[0]                     # stored releases keep their old shape
+    doc = api_client.get("/api/chatbots/k12/servicenow/export?format=json&scope=everything").json()
+    assert doc["scope"] == "everything"
+    assert {e["title"]: e["stage"] for e in doc["entries"]}["d"] == "Draft"
+
+
 # ── API ─────────────────────────────────────────────────────────────────────
 
 @needs_db
